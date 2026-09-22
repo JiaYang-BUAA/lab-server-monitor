@@ -1,0 +1,28 @@
+name: Cross-platform checks
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.10', '3.13']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: python -m unittest discover -s tests -v
+      - run: node --check web/app.js
+      - if: runner.os == 'Linux'
+        run: |
+          bash -n scripts/setup-ssh.sh
+          bash -n scripts/install-linux.sh
+          python -c "import time; from labmon.linux_collector import LinuxCollector; c=LinuxCollector('ci-linux'); c.sample(); time.sleep(1); s=c.sample(); assert s['platform']=='linux'; assert s['cpu']['logical_processors']>0; assert s['memory']['total_bytes']>0; print({k:s[k] for k in ('platform','telemetry_status')})"
+      - run: python scripts/build-release.py

@@ -1,0 +1,7 @@
+[
+  {"file":"windows_exporter-0.31.8-amd64.exe","roles":["hub","agent"],"url":"https://github.com/prometheus-community/windows_exporter/releases/download/v0.31.8/windows_exporter-0.31.8-amd64.exe","sha256":"03bb0fe80b8ad0b4e39606b96c4c5cc56b1f766760011ea2b00111157c6ef077"},
+  {"file":"python-3.13.15-embed-amd64.zip","roles":["hub","agent"],"url":"https://www.python.org/ftp/python/3.13.15/python-3.13.15-embed-amd64.zip","sha256":"d1f04d990aee1253d8569e8e5104e30fa9f5fa830899f14843448872d936a2cf"},
+  {"file":"WinSW-x64.exe","roles":["hub","agent"],"url":"https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe","sha256":"05b82d46ad331cc16bdc00de5c6332c1ef818df8ceefcd49c726553209b3a0da"},
+  {"file":"prometheus-3.13.3.windows-amd64.zip","roles":["hub"],"url":"https://github.com/prometheus/prometheus/releases/download/v3.13.3/prometheus-3.13.3.windows-amd64.zip","sha256":"acae8f2d71baab1acac7064a5af29c40ccb9843c1e7e32baa3d5c476ae7978c9"},
+  {"file":"grafana_13.2.2_windows_amd64.tar.gz","roles":["hub"],"url":"https://dl.grafana.com/grafana/release/13.2.2/grafana_13.2.2_34846740809_windows_amd64.tar.gz","sha256":"3372d0577aa271b7d724fba7e402bc90f49653f86827900fea4a12ad67b46da5"}
+]

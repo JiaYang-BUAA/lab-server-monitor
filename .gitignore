@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+.venv/
+config/
+data/
+runtime/
+downloads/
+services/
+logs/
+dist/
+evidence/
+backups/
+*.token
+*.pem
+*.key
+.env
+# Private deployment notes and original lab-specific setup helpers
+docs/operations.md
+docs/old-server.md
+docs/local-control.md
+docs/validation.md
+scripts/enable-old-ssh.ps1
+scripts/bootstrap-telemetry.ps1
+scripts/download-grafana.py
+scripts/build-agent-bundle.py

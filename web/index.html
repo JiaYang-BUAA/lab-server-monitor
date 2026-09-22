@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="实验室共享服务器的硬件状态、计算任务与使用登记。">
+  <title>Lab Monitor · 实验室服务器</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23193150'/%3E%3Cpath d='M8 9h16v6H8zm0 9h16v6H8z' fill='none' stroke='%237dd3dc' stroke-width='2'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳转到监测内容</a>
+  <aside class="sidebar" aria-label="主导航">
+    <a class="brand" href="#overview" aria-label="Lab Monitor 首页"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 4h16v6H4zm0 10h16v6H4zM7 7h.01M7 17h.01M11 7h6M11 17h6"/></svg></span><span>LAB MONITOR<small>实验室计算资源</small></span></a>
+    <div class="nav-label">工作空间</div>
+    <nav>
+      <a class="nav-item" href="#shared-board"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h14v18H5zM8 7h8M8 11h8M8 15h5"/></svg>共享公告</a>
+      <a class="nav-item active" href="#overview"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>服务器概览</a>
+      <a class="nav-item" href="#tasks"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5h12M9 12h12M9 19h12M3 5h1M3 12h1M3 19h1"/></svg>计算任务</a>
+      <a class="nav-item" href="#connections"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="14" rx="2"/><path d="m7 7 3 3-3 3m6 0h4M8 21h8m-4-4v4"/></svg>SSH 连接</a>
+      <a class="nav-item grafana-link" target="_blank" rel="noopener" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v16h16M8 15l4-5 4 2 5-7"/></svg>历史监测<span class="external" aria-label="新窗口打开">↗</span></a>
+    </nav>
+    <div class="sidebar-bottom"><span class="lan-dot" aria-hidden="true"></span>组内共享看板<p>资源状态 · 任务协作</p><div class="creator-credit" aria-label="制作者"><span class="creator-label">制作者</span><strong class="creator-name">+羊</strong><span class="creator-codex">Codex</span></div></div>
+  </aside>
+  <div class="workspace">
+    <header class="topbar"><span class="breadcrumb">实验室 <span>/</span> 服务器监测</span><button id="identity-button" class="identity-button" type="button"><span class="avatar" aria-hidden="true">我</span><span id="identity-name">设置我的姓名</span></button></header>
+    <main id="main" tabindex="-1">
+      <div class="page-heading"><div><p class="eyebrow">LAB RESOURCE MONITOR</p><h1 id="page-title">服务器监测</h1><p class="page-description">查看资源占用，了解谁在计算，安排下一次任务。</p></div><div class="refresh-group"><div id="refresh-state" class="refresh-state" role="status">正在连接监测服务…</div><button id="refresh-button" class="button secondary" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6.1 7a7 7 0 0 1 11.6-2L20 8M4 16l2.3 3A7 7 0 0 0 18 17"/></svg>刷新</button></div></div>
+      <div id="connection-banner" class="notice error" role="alert" hidden></div>
+      <section id="shared-board" class="panel board-panel" aria-labelledby="board-title">
+        <div class="board-heading"><div><p class="eyebrow">SHARED NOTES</p><h2 id="board-title">共享公告</h2><p>备注、占用安排和提醒，所有成员都能查看和编辑。</p></div><button id="board-edit" type="button" class="button secondary" disabled>编辑公告</button></div>
+        <div id="board-view"><p id="board-text" class="board-text board-empty">正在读取公告…</p><p id="board-meta" class="board-meta"></p></div>
+        <form id="board-form" hidden>
+          <div id="board-conflict" class="board-conflict" hidden>
+            <p id="board-conflict-message" role="alert"></p>
+            <p id="board-latest-meta" class="board-meta"></p>
+            <div id="board-latest-text" class="board-text board-latest-text"></div>
+            <p class="field-hint">你的草稿保留在下方。请对照上方最新版，将需要保留的修改合并到草稿后再继续。</p>
+            <div class="board-conflict-actions"><button id="board-reviewed" type="button" class="button secondary">已核对并合并</button><button id="board-load-latest" type="button" class="button secondary">载入最新版（替换草稿）</button></div>
+          </div>
+          <div class="field"><label for="board-draft">公告内容</label><textarea id="board-draft" name="text" rows="6" maxlength="20000" aria-describedby="board-draft-help board-character-count" placeholder="例如：今晚进行长时间计算，预计明早结束；如需使用请提前联系。"></textarea><div class="board-editor-hints"><p id="board-draft-help" class="field-hint">纯文本，支持换行；保存后所有成员可见。请勿填写密码或密钥。</p><span id="board-character-count" class="field-hint">0 / 20,000</span></div></div>
+          <div class="board-form-footer"><div class="field board-name-field"><label for="board-editor-name">修改者姓名 <span class="optional">可选</span></label><input id="board-editor-name" name="editor_name" maxlength="40" autocomplete="name" placeholder="未填写时显示未署名"></div><div class="board-actions"><button id="board-cancel" type="button" class="button secondary">取消</button><button id="board-save" type="submit" class="button primary">保存公告</button></div></div>
+          <div id="board-error" class="notice error" tabindex="-1" role="alert" hidden></div>
+        </form>
+        <p id="board-status" class="board-status" role="status" aria-live="polite"></p>
+      </section>
+      <section id="overview" aria-labelledby="overview-title">
+        <div class="section-heading server-overview-heading"><div><h2 id="overview-title">服务器概览 <span id="server-count" class="count-badge">—</span></h2><p id="server-summary">等待服务器状态</p></div><div class="server-search-tools"><label class="search-box server-search-box"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><span class="sr-only">搜索服务器名称或 ID</span><input id="server-search" type="search" placeholder="搜索服务器名称或 ID" autocomplete="off"></label><button id="server-search-clear" class="button secondary" type="button" hidden>清除搜索</button></div></div>
+        <p id="server-search-status" class="server-search-status" role="status" hidden></p>
+        <div id="server-list" class="server-grid"><div class="initial-loading">正在读取服务器状态…</div></div>
+      </section>
+      <section id="hardware" aria-labelledby="hardware-title"><div class="section-heading"><div><h2 id="hardware-title">资源监测</h2><p id="hardware-subtitle">等待服务器采样</p></div><span id="sample-time" class="subtle"></span></div><div id="hardware-content"></div></section>
+      <section id="tasks" aria-labelledby="tasks-title">
+        <div class="section-heading"><div><h2 id="tasks-title">计算任务 <span id="task-count" class="count-badge">—</span></h2><p>按计算进程归组；登记姓名和结束时间，方便其他成员安排使用。</p></div><span class="section-note">登记不会启动或停止计算</span></div>
+        <div class="panel tasks-panel"><div class="task-toolbar"><div class="filter-tabs" role="group" aria-label="筛选计算任务"><button type="button" class="filter-button selected" data-filter="all" aria-pressed="true">全部任务</button><button type="button" class="filter-button" data-filter="unclaimed" aria-pressed="false">未认领</button><button type="button" class="filter-button" data-filter="mine" aria-pressed="false">我的登记</button></div><label class="search-box"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><span class="sr-only">搜索任务、软件或姓名</span><input id="task-search" type="search" placeholder="搜索任务、软件或姓名" autocomplete="off"></label></div><div id="task-content" class="task-content"><div class="empty-state">等待任务数据</div></div><div class="table-footnote">CPU 占用按整台服务器的全部逻辑处理器计算。任务消失仅代表进程已结束，不代表计算成功。</div></div>
+      </section>
+      <section id="connections" aria-labelledby="connections-title"><div class="section-heading"><div><h2 id="connections-title">SSH 连接</h2><p>统计 SSH 监听端口的 Established TCP 连接，不等同于使用人数或正在计算的任务数。</p></div></div><div id="ssh-content" class="panel"></div></section>
+      <footer class="page-footer"><span>Lab Monitor <span class="footer-separator">/</span> 实验室共享计算资源</span><span>姓名由成员自行登记 · 结束时间仅作安排参考</span></footer>
+    </main>
+  </div>
+  <dialog id="claim-dialog" aria-labelledby="claim-title" aria-describedby="claim-description">
+    <form id="claim-form">
+      <div class="dialog-heading"><div><p class="eyebrow">TASK REGISTRATION</p><h2 id="claim-title">认领计算任务</h2></div><button type="button" class="icon-button" data-close="claim-dialog" aria-label="关闭登记窗口">×</button></div>
+      <p id="claim-description" class="dialog-description">登记仅帮助组内协作，不会更改计算进程。姓名由你自行填写。</p>
+      <div id="claim-context" class="claim-context"></div>
+      <div id="claim-error" class="notice error" tabindex="-1" role="alert" hidden></div>
+      <div class="form-grid"><div class="field"><label for="owner-name">你的姓名 <span class="required">*</span></label><input id="owner-name" name="owner_name" maxlength="40" required autocomplete="name"></div><div class="field"><label for="task-name">任务名称 <span class="required">*</span></label><input id="task-name" name="task_name" maxlength="120" required placeholder="例如：涡轮叶片温度场计算"></div></div>
+      <div class="field"><label for="expected-end">人工预计结束时间 <span class="optional">可选</span></label><input id="expected-end" name="expected_end" type="datetime-local" aria-describedby="expected-end-help"><p id="expected-end-help" class="field-hint">按当前浏览器的本地时间填写。暂时无法判断时留空；这不是自动计算的结果。</p></div>
+      <div class="field"><label for="task-notes">任务备注 <span class="optional">可选</span></label><textarea id="task-notes" name="notes" rows="2" maxlength="500" placeholder="计算内容、预计资源需求或联系说明"></textarea></div>
+      <details id="log-options" class="log-options"><summary>从计算日志估算进度 <span class="optional">可选</span></summary><div class="log-fields"><p class="field-hint">读取服务器允许目录下的日志。只有日志包含可验证的进度、时间和目标时才会给出估算。</p><div class="field"><label for="log-path">服务器日志路径</label><input id="log-path" name="log_path" autocomplete="off" spellcheck="false" placeholder="例如 /srv/jobs/job.sta 或 E:\jobs\job.sta"></div><div class="form-grid"><div class="field"><label for="log-kind">计算软件</label><select id="log-kind" name="log_kind"><option value="abaqus">Abaqus</option><option value="fluent">Fluent</option><option value="comsol">COMSOL</option></select></div><div class="field"><label for="total-units">目标总进度 <span class="optional">可选</span></label><input id="total-units" name="total_units" type="number" min="0.000000001" step="any" aria-describedby="total-units-help" placeholder="目标迭代数或仿真终止时间"></div></div><p id="total-units-help" class="field-hint">单位应与日志中的进度一致；多步计算或目标不明确时，自动估算可能不可用。</p></div></details>
+      <p class="session-hint">此浏览器保存登记权限。其他浏览器可查看，需要编辑时请使用本次登记的浏览器。</p>
+      <div class="dialog-actions"><button id="release-button" type="button" class="button release" hidden>释放登记</button><div class="dialog-actions-right"><button type="button" class="button secondary" data-close="claim-dialog">取消</button><button id="save-claim" type="submit" class="button primary">保存登记</button></div></div>
+    </form>
+  </dialog>
+  <dialog id="identity-dialog" class="small-dialog" aria-labelledby="identity-title"><form id="identity-form"><div class="dialog-heading"><h2 id="identity-title">设置我的姓名</h2><button type="button" class="icon-button" data-close="identity-dialog" aria-label="关闭姓名窗口">×</button></div><p class="dialog-description">用于预填任务登记，不是服务器账号或身份验证。</p><div class="field"><label for="identity-input">姓名</label><input id="identity-input" name="name" maxlength="40" required autocomplete="name"></div><div id="identity-error" class="notice error" role="alert" hidden></div><div class="dialog-actions-right"><button type="button" class="button secondary" data-close="identity-dialog">取消</button><button type="submit" class="button primary">保存姓名</button></div></form></dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>
