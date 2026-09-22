@@ -9,6 +9,7 @@ from labmon.collector import Collector, classify_process, parse_metrics
 
 
 def exporter_fixture(tick=0, *, cores=192, start=1000, process_cpu=0, secret=False):
+    secret_label = ',cmdline="SECRET_TOKEN"' if secret else ''
     lines = ['windows_cpu_logical_processor 192', 'windows_memory_physical_total_bytes 10000',
              'windows_memory_available_bytes 2500', 'windows_exporter_collector_success{collector="cpu"} 1']
     for i in range(cores):
@@ -16,7 +17,7 @@ def exporter_fixture(tick=0, *, cores=192, start=1000, process_cpu=0, secret=Fal
         core = f'{i // 64},{i % 64}'
         lines.append(f'windows_cpu_time_total{{core="{core}",mode="idle"}} {100 + tick * .75}')
     lines += [
-        f'windows_process_info{{process="standard",process_id="123",creating_process_id="100",owner="DOMAIN\\\\李明"{",cmdline=\"SECRET_TOKEN\"" if secret else ""}}} 1',
+        f'windows_process_info{{process="standard",process_id="123",creating_process_id="100",owner="DOMAIN\\\\李明"{secret_label}}} 1',
         f'windows_process_start_time_seconds_timestamp{{process="standard",process_id="123"}} {start}',
         f'windows_process_cpu_time_total{{process="standard",process_id="123",mode="user"}} {process_cpu * .8}',
         f'windows_process_cpu_time_total{{process="standard",process_id="123",mode="privileged"}} {process_cpu * .2}',

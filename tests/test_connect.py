@@ -122,7 +122,8 @@ class ConnectTests(unittest.TestCase):
         original_hub, original_prom = self.hub.read_bytes(), self.prom.read_bytes()
         real_replace = connect.os.replace
         def fail_hub(source, target):
-            if Path(target) == self.hub:
+            # Windows runner TEMP can use an 8.3 alias while the helper resolves it.
+            if Path(target).resolve() == self.hub.resolve():
                 raise PermissionError("test blocked replacement")
             return real_replace(source, target)
         with mock.patch.object(connect.os, "replace", side_effect=fail_hub), self.assertRaises(PermissionError):

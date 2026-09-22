@@ -6,6 +6,7 @@
 
 - Windows 开发机：全部 Python unittest 回归；覆盖旧版采集/日志/接口、Linux `/proc` fixture、平台分发、共享公告权限/并发冲突、0/1/2/6/12 台配置、通用指标、额外服务器接入、Windows/Linux 安装配置、SSH 参数及公开包清单。
 - 本机 Bash：两个 Linux shell 脚本 `bash -n`；PowerShell 5.1/7 解析与 Windows SSH `-DryRun`。没有为测试安装或更改本机 SSH 服务。
+- GitHub Ubuntu runner：已执行真实 `/proc` 采集 smoke check，CPU 核心数、内存总量及 Linux 平台识别通过；这不等于已安装和验证 systemd、SSH 或防火墙配置。完整跨平台矩阵结果以仓库 Actions 页面为准。
 - 浏览器隔离测试：12 台 Windows/Linux 混合卡片、服务器搜索、公告保存/换行、HTML 纯文本、另一会话更新时保留草稿并阻止覆盖、明确合并后再次保存。
 - 手机宽度 375 px：12 台卡片自动变为单列，页面无横向溢出。资源条使用实际百分比宽度，保留 CSP 限制下可正常显示的 SVG 实现。
 - 现有两台 Windows 服务器：新版已更新，监测服务恢复运行，实时页面两台在线；192/48 个逻辑处理器均完整采集。Prometheus 配置检查通过，统一 CPU/内存等指标已采到两台数据，原历史数据库保留。
@@ -13,7 +14,7 @@
 
 ## 尚未验证
 
-- Linux 真机上的 SSH 登录、systemd 安装/启动、UFW 行为及完整 `/proc` 采集。本机没有 Linux/WSL 环境，POSIX 特定权限和符号链接用例会明确跳过。
+- 独立 Linux 服务器上的 SSH 登录、systemd 安装/启动、UFW 行为及生产负载采集。本地 Windows 开发机的 POSIX 权限与符号链接用例会明确跳过；Ubuntu CI 可执行这些平台相关测试。
 - Windows 全新系统从零下载所有依赖和安装的完整流程；已验证配置生成与已有 Windows 部署升级，不冒充全新机器验收。
 - 此次新增的通用 SSH 脚本真实修改后登录；Windows dry-run 已验证，既有服务器 SSH 连通不等于通用安装脚本的实机验收。
 - 大规模部署的性能与容量上限、所有发行版/CPU/GPU/文件系统组合、所有成员真实求解日志的 ETA。
