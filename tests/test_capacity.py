@@ -11,7 +11,8 @@ NOW = datetime(2026, 9, 24, tzinfo=timezone.utc).timestamp() + 10
 def server(status="online", age=2):
     return {"id": "compute", "name": "计算机", "status": status,
             "last_seen": f"2026-09-24T00:00:{10-age:02d}+00:00", "jobs": [{}],
-            "snapshot": {"telemetry_status": "ok", "cpu": {"logical_processors": 64, "percent": 25},
+            "snapshot": {"telemetry_status": "ok", "cpu": {"logical_processors": 64,
+                                                              "observed_processors": 64, "percent": 25},
                          "memory": {"total_bytes": 128 * GIB, "available_bytes": 80 * GIB},
                          "gpus": [{"id": "0", "name": "GPU", "memory_total_bytes": 24 * GIB,
                                    "memory_used_bytes": 4 * GIB, "utilization_pct": 10}],
@@ -44,6 +45,9 @@ class CapacityTests(unittest.TestCase):
                                            "gpu_memory_bytes": 0}, NOW, 30)
         self.assertIsNone(report["cpu"]["estimated_usable_logical_cores"])
         self.assertEqual(report["verdict"], "unknown")
+        del partial["snapshot"]["cpu"]["observed_processors"]
+        self.assertEqual(capacity_report(partial, {"cpu_cores": 8, "memory_bytes": 0,
+                                                   "gpu_memory_bytes": 0}, NOW, 30)["verdict"], "unknown")
 
     def test_invalid_query_is_rejected(self):
         self.assertEqual(parse_capacity_query("host_id=compute&cpu_cores=16&memory_gb=32"),

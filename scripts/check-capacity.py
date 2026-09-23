@@ -54,7 +54,10 @@ def main(argv=None):
             cpu = server["cpu"]
             memory = server["memory"]
             free_gib = memory["estimated_usable_bytes"] / 1024 ** 3 if memory["estimated_usable_bytes"] is not None else None
-            details = [f"CPU {cpu['used_pct']}%" if cpu["used_pct"] is not None else "CPU 未知",
+            age = server.get("sample_age_seconds")
+            details = [f"状态 {server['status']}",
+                       f"采样 {server.get('observed_at') or '未知'}" + (f"（{age:.1f} 秒前）" if age is not None else ""),
+                       f"CPU {cpu['used_pct']}%" if cpu["used_pct"] is not None else "CPU 未知",
                        f"估算可用 {cpu['estimated_usable_logical_cores']} 核" if cpu["estimated_usable_logical_cores"] is not None else "核数未知",
                        f"预留余量后内存 {free_gib:.1f} GiB" if free_gib is not None else "内存未知",
                        f"活跃任务 {server['active_jobs']} 项 / 登记 {server['active_claims']} 项"]

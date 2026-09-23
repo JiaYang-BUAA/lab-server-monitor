@@ -29,7 +29,7 @@ def capacity_report(server: dict, requested: dict, now: float, stale_seconds: fl
     observed = cpu.get("observed_processors")
     used_pct = cpu.get("percent")
     usable_cores = None
-    coverage_complete = (observed is None or isinstance(observed, int) and not isinstance(observed, bool)
+    coverage_complete = (isinstance(observed, int) and not isinstance(observed, bool)
                          and observed == logical)
     if (isinstance(logical, int) and not isinstance(logical, bool) and logical > 0
             and coverage_complete and _finite(used_pct) and 0 <= used_pct <= 100):

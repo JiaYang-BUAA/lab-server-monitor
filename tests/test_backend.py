@@ -387,6 +387,7 @@ class HTTPTests(unittest.TestCase):
 
     def test_server_name_and_capacity_api(self):
         self.runtime.servers["lab-new"]["snapshot"]["cpu"]["logical_processors"] = 64
+        self.runtime.servers["lab-new"]["snapshot"]["cpu"]["observed_processors"] = 64
         self.runtime.servers["lab-new"]["snapshot"]["memory"] = {
             "total_bytes": 128 * 1024 ** 3, "available_bytes": 80 * 1024 ** 3}
         code, headers, raw = self.request("GET", "/api/capacity?host_id=lab-new&cpu_cores=16&memory_gb=32")
