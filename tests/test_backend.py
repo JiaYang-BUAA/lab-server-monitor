@@ -9,7 +9,7 @@ import time
 import unittest
 
 from labmon.estimates import iso
-from labmon.server import AgentRuntime, HubRuntime, MonitorHTTPServer, group_jobs, validate_claim
+from labmon.server import AgentRuntime, HubRuntime, MonitorHTTPServer, group_jobs, validate_claim, validate_public_origin
 from labmon.storage import ConflictError, OwnershipError, Store
 
 
@@ -362,6 +362,44 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(self.request("POST", "/api/identity", {"name": "A"}, headers={"Origin": "http://evil.example"})[0], 403)
         self.assertEqual(self.request("GET", "/api/state", headers={"Host": "evil.example:" + str(self.server.server_port)})[0], 403)
         self.assertEqual(self.request("POST", "/api/identity", {"name": "A"}, headers={"Content-Type": "text/plain"})[0], 400)
+
+    def test_public_https_origin_supports_board_without_accepting_http_writes(self):
+        public = "https://lab.example.ts.net"
+        self.server.public_origin = validate_public_origin(public)
+        headers = {"Host": "lab.example.ts.net", "Origin": public}
+        snapshot_data = self.runtime.servers["lab-new"]["snapshot"]
+        snapshot_data["hostname"] = "private-machine"
+        snapshot_data["ssh"] = {"tcp_connections": 1, "connections": [{"remote_address": "10.0.0.12"}]}
+        job_id = self.runtime.servers["lab-new"]["jobs"][0]["id"]
+        owner_token, _, _ = self.runtime.store.session(None)
+        self.runtime.store.create(owner_token, "lab-new", job_id, claim_payload(log_path="E:/private/job.sta"))
+        code, response_headers, raw = self.request("GET", "/api/state", headers=headers)
+        self.assertEqual(code, 200)
+        self.assertIn("Secure", response_headers["Set-Cookie"])
+        self.assertEqual(response_headers["Strict-Transport-Security"], "max-age=31536000")
+        public_state = json.loads(raw)
+        self.assertEqual(public_state["servers"][0]["snapshot"]["ssh"]["tcp_connections"], 1)
+        for private_value in ("private-machine", "10.0.0.12", "E:/private/job.sta", '"owner": "shared"'):
+            self.assertNotIn(private_value, raw.decode())
+        revision = public_state["board"]["revision"]
+        self.assertEqual(self.request("PUT", "/api/board", {"text": "公网公告", "revision": revision}, headers=headers)[0], 200)
+        self.assertEqual(self.request("GET", "/api/board", headers=headers)[0], 200)
+        self.assertEqual(self.request("PUT", "/api/board", {"text": "wrong", "revision": revision + 1},
+                                      headers={**headers, "Origin": "http://lab.example.ts.net"})[0], 403)
+        self.assertEqual(self.request("GET", "/api/state", headers={"Host": "evil.example"})[0], 403)
+        local = self.request("GET", "/api/state")
+        self.assertEqual(local[0], 200)
+        self.assertNotIn("Secure", local[1]["Set-Cookie"])
+        self.assertIn("10.0.0.12", local[2].decode())
+
+    def test_public_origin_requires_https_dns_and_loopback_binding(self):
+        for origin in ("http://lab.example.ts.net", "https://lab.example.ts.net/path",
+                       "https://lab.example.ts.net:8766", "https://user@lab.example.ts.net",
+                       "https://127.0.0.1"):
+            with self.subTest(origin=origin), self.assertRaises(ValueError):
+                validate_public_origin(origin)
+        with self.assertRaisesRegex(ValueError, "127.0.0.1"):
+            MonitorHTTPServer(("0.0.0.0", 0), {**self.config, "public_origin": "https://lab.example.ts.net"}, self.runtime)
 
     def test_snapshot_contains_no_agent_credentials(self):
         raw = self.request("GET", "/api/state")[2]

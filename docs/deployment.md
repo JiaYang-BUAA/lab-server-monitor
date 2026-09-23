@@ -46,6 +46,8 @@ Windows 安装版的 Python 路径是 `runtime\python\python.exe`；Linux 使用
 
 网页默认在 `http://<Hub地址>:8766/`，远程 Agent 为 8767。Windows exporter/Prometheus/Grafana 仅监听回环地址 9182/9090/3000。新建规则将 Agent 入站限定为 Hub 来源、网页限定为指定成员网段；既有宽泛放行规则仍然有效，安装器不会收紧这些规则。Windows 重跑时保留同名规则，变更来源需要管理员明确修改现有规则。网络、防火墙和云安全组仍需允许这条路径。
 
+跨网络公开网页时，使用 [公网 HTTPS 部署](public-access.md) 中的独立回环 Hub 与 Funnel。不要直接把现有内网 8766 或 Agent 8767 做路由器端口映射。
+
 ## 备份、升级与恢复
 
 先备份 `config` 和 `data/hub/labmon.sqlite3`，备份目录同样限制访问。运行时数据库用 SQLite backup API 备份，或先停止 Hub 再复制；不能只复制写入中的 SQLite 主文件而忽略 WAL。历史趋势位于 `data/prometheus`，Grafana 数据位于 `data/grafana`。

@@ -28,7 +28,7 @@ SOURCE_REQUIRED = (
     "scripts/install-linux.sh", "scripts/configure-linux.py", "scripts/setup-ssh.ps1",
     "scripts/setup-ssh.sh", "scripts/build-release.py", "docs/deployment.md",
     "docs/security.md", "docs/release-validation.md", "docs/linux-install.md",
-    "docs/linux-collector.md", "docs/ssh-setup.md",
+    "docs/linux-collector.md", "docs/ssh-setup.md", "docs/public-access.md",
 )
 SOURCE_GLOBS = ("labmon/*.py", "tests/*.py")
 SOURCE_OPTIONAL = (".github/workflows/test.yml",)

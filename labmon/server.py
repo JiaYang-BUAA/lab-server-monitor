@@ -160,6 +160,53 @@ def validate_agent_url(value: str):
     return value.rstrip("/")
 
 
+def validate_public_origin(value: str):
+    """Accept one explicit HTTPS hostname for a loopback-only public proxy."""
+    if not isinstance(value, str) or value != value.strip():
+        raise ValueError("public_origin 必须是完整的 HTTPS 地址")
+    try:
+        parsed = urlsplit(value)
+        if parsed.port is not None:
+            raise ValueError
+    except ValueError as exc:
+        raise ValueError("public_origin 必须是无端口的 HTTPS 域名") from exc
+    hostname = (parsed.hostname or "").lower()
+    labels = hostname.split(".")
+    try:
+        ipaddress.ip_address(hostname)
+    except ValueError:
+        pass
+    else:
+        raise ValueError("public_origin 必须使用 DNS 域名")
+    if (parsed.scheme != "https" or not hostname or parsed.username or parsed.password
+            or parsed.netloc.lower() != hostname or parsed.path or parsed.query or parsed.fragment or len(labels) < 2
+            or len(hostname) > 253 or any(not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+                                       for label in labels)):
+        raise ValueError("public_origin 必须是无路径的 HTTPS 域名")
+    return "https://" + hostname
+
+
+def redact_public_state(state: dict):
+    """Keep useful load data while omitting private network and log details."""
+    for server in state["servers"]:
+        snapshot = server.get("snapshot")
+        if isinstance(snapshot, dict):
+            snapshot.pop("hostname", None)
+            if isinstance(snapshot.get("ssh"), dict):
+                snapshot["ssh"]["connections"] = []
+            for process in snapshot.get("processes", []):
+                if isinstance(process, dict):
+                    process.pop("owner", None)
+        for job in server["jobs"]:
+            claim = job.get("claim")
+            if isinstance(claim, dict) and not claim.get("can_edit"):
+                claim.pop("log_path", None)
+    for claim in state["recent_tasks"]:
+        if isinstance(claim, dict):
+            claim.pop("log_path", None)
+    return state
+
+
 class AgentRuntime:
     def __init__(self, config: dict, collector=None):
         self.config = config
@@ -467,6 +514,11 @@ class MonitorHTTPServer(ThreadingHTTPServer):
 
     def __init__(self, address, config, runtime):
         self.config, self.runtime = config, runtime
+        self.public_origin = None
+        if config.get("mode") == "hub" and config.get("public_origin"):
+            self.public_origin = validate_public_origin(config["public_origin"])
+            if address[0] != "127.0.0.1":
+                raise ValueError("公网代理模式要求 Hub 只监听 127.0.0.1")
         super().__init__(address, Handler)
 
 
@@ -487,8 +539,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "same-origin")
         self.send_header("X-Frame-Options", "SAMEORIGIN")
+        if self._public_request():
+            self.send_header("Strict-Transport-Security", "max-age=31536000")
         if getattr(self, "new_cookie", None):
-            self.send_header("Set-Cookie", f"{COOKIE}={self.new_cookie}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000")
+            secure = "; Secure" if self._public_request() else ""
+            self.send_header("Set-Cookie", f"{COOKIE}={self.new_cookie}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000{secure}")
         for key, value in (headers or {}).items():
             self.send_header(key, value)
         self.end_headers()
@@ -526,6 +581,8 @@ class Handler(BaseHTTPRequestHandler):
         host = self.headers.get("Host", "")
         if not host or "/" in host or "\\" in host or "@" in host:
             return False
+        if self._public_request():
+            return True
         try:
             parsed = urlsplit("http://" + host)
             hostname, port = parsed.hostname, parsed.port or 80
@@ -544,13 +601,18 @@ class Handler(BaseHTTPRequestHandler):
             pass
         return bool(hostname and hostname.lower() in allowed)
 
+    def _public_request(self):
+        origin = self.server.public_origin
+        return bool(origin and self.headers.get("Host", "").lower() == urlsplit(origin).netloc)
+
     def _origin_valid(self):
         if not self._host_valid():
             return False
         origin = self.headers.get("Origin", "")
         try:
             parsed = urlsplit(origin)
-            return parsed.scheme == "http" and parsed.netloc.lower() == self.headers.get("Host", "").lower() and not parsed.path and not parsed.query and not parsed.fragment
+            scheme = "https" if self._public_request() else "http"
+            return parsed.scheme == scheme and parsed.netloc.lower() == self.headers.get("Host", "").lower() and not parsed.path and not parsed.query and not parsed.fragment
         except ValueError:
             return False
 
@@ -643,7 +705,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._reply(200, {"ok": True, "mode": "hub"})
         if path == "/api/state" and self.command in {"GET", "HEAD"}:
             token, identity = self._session()
-            return self._reply(200, self.server.runtime.state(token, identity))
+            state = self.server.runtime.state(token, identity)
+            if self._public_request():
+                state = redact_public_state(state)
+            return self._reply(200, state)
         if path == "/api/board" and self.command in {"GET", "HEAD"}:
             self._session()
             return self._reply(200, self.server.runtime.store.board())
@@ -728,7 +793,8 @@ class Handler(BaseHTTPRequestHandler):
             body = json.dumps(self._body()).encode("utf-8")
         path = split.path + ("?" + split.query if split.query else "")
         headers = {"Host": parsed.netloc, "X-Forwarded-Host": self.headers["Host"],
-                   "X-Forwarded-Proto": "http", "Accept": self.headers.get("Accept", "*/*")}
+                   "X-Forwarded-Proto": "https" if self._public_request() else "http",
+                   "Accept": self.headers.get("Accept", "*/*")}
         if body is not None:
             headers["Content-Type"] = self.headers.get("Content-Type", "application/json")
         for header in ("If-None-Match", "If-Modified-Since", "Range"):
@@ -748,7 +814,10 @@ class Handler(BaseHTTPRequestHandler):
             location = response.getheader("Location")
             if location:
                 link = urlsplit(location)
-                if link.netloc and link.netloc != parsed.netloc:
+                allowed_redirect_hosts = {parsed.netloc}
+                if self._public_request():
+                    allowed_redirect_hosts.add(urlsplit(self.server.public_origin).netloc)
+                if link.netloc and link.netloc not in allowed_redirect_hosts:
                     return self._error(502, "面板返回了非本机跳转")
                 forwarded["Location"] = (link.path or "/grafana/") + ("?" + link.query if link.query else "")
             return self._reply(response.status, data, response.getheader("Content-Type", "application/octet-stream"), forwarded)

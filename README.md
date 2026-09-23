@@ -16,7 +16,7 @@
 
 在 [Releases](https://github.com/JiaYang-BUAA/lab-server-monitor/releases) 下载完整源码包或独立 SSH 配置包。首版为预发布版本，Linux 真实服务器上的安装与登录仍需验收。
 
-下载源码包并解压，在专用目录中按照 [部署说明](docs/deployment.md) 安装第一台 Hub，再为每台额外服务器安装 Agent。Linux 细节见 [Linux 安装](docs/linux-install.md)。Windows 安装器可下载并校验固定版本的官方依赖，Python 应用本身仅使用标准库。
+下载源码包并解压，在专用目录中按照 [部署说明](docs/deployment.md) 安装第一台 Hub，再为每台额外服务器安装 Agent。需要让任意网络的浏览器访问时，按 [公网 HTTPS 部署](docs/public-access.md) 把 Hub 放在回环地址后，通过 Tailscale Funnel 提供公网入口。Linux 细节见 [Linux 安装](docs/linux-install.md)。Windows 安装器可下载并校验固定版本的官方依赖，Python 应用本身仅使用标准库。
 
 已有 SSH 不需要重新配置。尚未配置时，把 SSH 代码包和自己的公钥带到服务器，运行对应平台脚本；可先 dry-run。详见 [SSH 配置说明](docs/ssh-setup.md)。SSH 安装与监测安装相互独立。
 
@@ -24,7 +24,7 @@
 
 ## 数据与使用范围
 
-适合可信内网/VPN。网页未实现账户认证，姓名是自报信息；所有能访问网页的人都可编辑公告。CPU 以整机全部逻辑处理器为分母，低 CPU 不等于任务完成；任务结束也不等于计算成功。人工预计和日志估算分别显示。未授权任何网页停止或执行计算功能。
+默认适合可信内网/VPN。网页未实现账户认证，姓名是自报信息；所有能访问网页的人都可编辑公告。配置公网 HTTPS 入口后，任何获得链接的人也能查看和修改公告；公网 API 会隐藏 SSH 来源 IP、系统账号、主机名和他人的日志路径。CPU 以整机全部逻辑处理器为分母，低 CPU 不等于任务完成；任务结束也不等于计算成功。人工预计和日志估算分别显示。未授权任何网页停止或执行计算功能。
 
 Linux 自动安装的初始目标是 Ubuntu 22.04+/Debian 12+、Python 3.10+、systemd 247+；其它系统需自行适配。支持情况与实测边界见 [验证说明](docs/release-validation.md)、[Linux 指标口径](docs/linux-collector.md) 和 [访问边界](docs/security.md)。
 
