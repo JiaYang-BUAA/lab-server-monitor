@@ -1,6 +1,7 @@
 import concurrent.futures
 import http.client
 import json
+import sqlite3
 from pathlib import Path
 import tempfile
 import threading
@@ -56,12 +57,31 @@ class BoardTests(unittest.TestCase):
         self.assertEqual(restored["updated_by"], "乙")
         self.assertEqual(self.request(path="/api/state")[2]["board"], restored)
 
+    def test_old_board_migrates_without_false_paragraph_authorship(self):
+        path = Path(self.temp.name) / "labmon.sqlite3"
+        self.runtime.store.update_board("旧段落\n保留段落", 0, "旧整板编辑者")
+        db = sqlite3.connect(path)
+        try:
+            db.execute("DROP TABLE board_segments")
+            db.commit()
+        finally:
+            db.close()
+        restored = Store(path)
+        before = restored.board()
+        self.assertEqual([item["text"] for item in before["paragraphs"]], ["旧段落", "保留段落"])
+        self.assertTrue(all(item["legacy"] and item["updated_by"] is None for item in before["paragraphs"]))
+        after = restored.update_board("新段落\n保留段落", before["revision"], "新编辑者")
+        self.assertEqual(after["paragraphs"][0]["updated_by"], "新编辑者")
+        self.assertFalse(after["paragraphs"][0]["legacy"])
+        self.assertTrue(after["paragraphs"][1]["legacy"])
+        self.assertEqual("\n".join(item["text"] for item in after["paragraphs"]), after["text"])
+
     def test_conflict_returns_latest_without_overwrite_and_allows_empty_text(self):
-        self.assertEqual(self.request("PUT", payload={"text": "first", "revision": 0})[0], 200)
-        code, _, body = self.request("PUT", payload={"text": "stale", "revision": 0})
+        self.assertEqual(self.request("PUT", payload={"text": "first", "revision": 0, "editor_name": "甲"})[0], 200)
+        code, _, body = self.request("PUT", payload={"text": "stale", "revision": 0, "editor_name": "乙"})
         self.assertEqual(code, 409)
         self.assertEqual(body["board"]["text"], "first")
-        self.assertEqual(self.request("PUT", payload={"text": "", "revision": 1})[0], 200)
+        self.assertEqual(self.request("PUT", payload={"text": "", "revision": 1, "editor_name": "甲"})[0], 200)
         self.assertEqual(self.request()[2]["text"], "")
 
     def test_origin_types_and_limits(self):
@@ -76,7 +96,7 @@ class BoardTests(unittest.TestCase):
         stores = [Store(Path(self.temp.name) / "labmon.sqlite3") for _ in range(2)]
         def save(index):
             try:
-                stores[index].update_board(str(index), 0, "")
+                stores[index].update_board(str(index), 0, "测试者")
                 return "saved"
             except ConflictError:
                 return "conflict"

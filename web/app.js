@@ -17,7 +17,7 @@
   const clamp = (value) => Math.max(0, Math.min(100, value));
   const validDate = (value) => value != null && value !== '' && Number.isFinite(new Date(value).getTime());
   const clockTime = (value) => validDate(value) ? new Date(value).toLocaleTimeString('zh-CN', {hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '尚无采样';
-  const fullTime = (value) => validDate(value) ? new Date(value).toLocaleString('zh-CN', {hour12:false,month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : '未知';
+  const fullTime = (value) => validDate(value) ? new Date(value).toLocaleString('zh-CN', {hour12:false,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : '未知';
   const count = (value) => numeric(value) ? value.toLocaleString('zh-CN') : '—';
   function bytes(value) {
     if (!numeric(value) || value < 0) return '—';
@@ -38,8 +38,11 @@
   const jobLabels = {computing:'计算中',running:'运行中',idle:'低占用',ended:'进程已结束',unknown:'状态未知'};
   let state = null, selectedId = null, filter = 'all', query = '', fetching = false;
   let timer = null, toastTimer = null, latestError = '', lastFetched = 0, editTarget = null, submitting = false;
+  let refreshOutcome = 'auto', renameTargetId = null, renameSaving = false;
   let serverQuery = '', boardLatest = null, boardEditing = false, boardBaseRevision = null, boardSaving = false;
   const expanded = new Set();
+  const groupSelection = new Set(), ungrouping = new Set();
+  let groupSubmitting = false;
   const server = () => state?.servers?.find((item) => item.id === selectedId);
   const effectiveStatus = (item) => latestError && item.status === 'online' ? 'stale' : item.status;
   const canClaim = (item) => effectiveStatus(item) === 'online';
@@ -59,7 +62,9 @@
         const messages = {403:'此浏览器没有这条登记的编辑权限，或请求来源未获允许。',404:'任务或登记已不存在，请刷新后重试。',409:'任务登记已发生变化，请刷新后查看最新状态。',429:'操作过于频繁，请稍后重试。'};
         const detail = typeof payload.error === 'string' ? payload.error : typeof payload.message === 'string' ? payload.message : '';
         const boardMessages = {403:'请求来源未获允许，请从看板页面重新尝试。',409:'公告已被其他成员修改，请先核对最新版。'};
-        const error = new Error((path === '/api/board' ? boardMessages[response.status] : messages[response.status]) || (detail ? `提交未完成：${detail}` : `服务暂时不可用（HTTP ${response.status}），请稍后重试。`));
+        const serverMessages = {404:'服务器已从监测配置中移除，请刷新页面。'};
+        const groupMessages = method === 'DELETE' ? {404:'组合已不存在，请刷新任务列表。',409:'此组合已有任务登记，请先释放登记，再取消归组。'} : {404:'所选任务已不存在，请刷新后重选。',409:'所选任务状态已变化或已被认领，请刷新后重选。'};
+        const error = new Error((path === '/api/board' ? boardMessages[response.status] : path.startsWith('/api/servers/') ? serverMessages[response.status] : path.startsWith('/api/job-groups') ? groupMessages[response.status] : messages[response.status]) || (detail ? `提交未完成：${detail}` : `服务暂时不可用（HTTP ${response.status}），请稍后重试。`));
         error.status = response.status; error.payload = payload;
         throw error;
       }
@@ -75,18 +80,20 @@
     clearTimeout(timer);
     if (!document.hidden) timer = setTimeout(refresh, 5000);
   }
-  async function refresh() {
+  async function refresh(manual = false) {
     if (fetching || document.hidden) return;
     fetching = true;
     $('refresh-button').disabled = true;
+    $('refresh-label').textContent = '刷新中…';
+    renderRefreshStatus();
     try {
       const data = await api('/api/state');
       if (!Array.isArray(data.servers)) throw new Error('监测服务返回的数据格式不完整，请稍后重试。');
-      state = data; lastFetched = Date.now(); latestError = '';
+      state = data; lastFetched = Date.now(); latestError = ''; refreshOutcome = manual ? 'manual' : 'auto';
       if (!data.servers.some((item) => item.id === selectedId)) selectedId = data.servers.find((item) => item.status !== 'unconfigured')?.id || data.servers[0]?.id;
       render();
     } catch (error) {
-      latestError = error.message;
+      latestError = error.message; refreshOutcome = manual ? 'manual' : 'auto';
       if (state) render();
       else {
         $('board-text').textContent = '暂时无法读取共享公告，连接恢复后自动重试。';
@@ -96,14 +103,14 @@
         $('ssh-content').innerHTML = empty('连接数未知', '请等待监测服务恢复。', 'terminal');
       }
     } finally {
-      fetching = false; $('refresh-button').disabled = false;
+      fetching = false; $('refresh-button').disabled = false; $('refresh-label').textContent = '立即刷新';
       renderRefreshStatus(); schedulePoll();
     }
   }
   function renderRefreshStatus() {
     $('connection-banner').hidden = !latestError;
     $('connection-banner').textContent = latestError ? `${latestError}${state ? ' 当前展示上次取得的数据，不能视为实时占用。' : ''}` : '';
-    $('refresh-state').textContent = document.hidden ? '页面已隐藏，暂停刷新' : latestError ? '连接中断 · 自动重试' : lastFetched ? `每 5 秒刷新 · ${clockTime(lastFetched)}` : '正在连接监测服务…';
+    $('refresh-state').textContent = document.hidden ? '页面已隐藏，暂停刷新' : fetching ? '正在读取最新状态…' : latestError ? `${refreshOutcome === 'manual' ? '刷新失败' : '连接中断'} · 自动重试` : lastFetched ? `${refreshOutcome === 'manual' ? '已手动刷新' : '每 5 秒自动刷新'} · ${clockTime(lastFetched)}` : '正在连接监测服务…';
   }
   function preserveFocus(callback) {
     const focused = document.activeElement;
@@ -154,7 +161,14 @@
     $('board-edit').hidden = boardEditing;
     $('board-view').hidden = boardEditing;
     $('board-form').hidden = !boardEditing;
-    $('board-text').textContent = boardLatest.text || '还没有公告。可以在这里写下资源安排、占用时间或需要大家知道的备注。';
+    const paragraphs = Array.isArray(boardLatest.paragraphs) ? boardLatest.paragraphs : null;
+    $('board-text').innerHTML = !boardLatest.text ? esc('还没有公告。可以在这里写下资源安排、占用时间或需要大家知道的备注。') : paragraphs ? paragraphs.map((paragraph) => {
+      if (!paragraph.text) return '<div class="board-blank-line" aria-hidden="true"></div>';
+      const attribution = paragraph.legacy
+        ? `历史内容 · 原版未记录逐段编辑人${validDate(paragraph.updated_at) ? ` · 原公告整体更新 ${fullTime(paragraph.updated_at)}` : ''}`
+        : `${fullTime(paragraph.updated_at)} · ${paragraph.updated_by || '未署名'}`;
+      return `<div class="board-paragraph"><div class="board-paragraph-meta">${esc(attribution)}</div><div class="board-paragraph-body">${esc(paragraph.text)}</div></div>`;
+    }).join('') : esc(boardLatest.text);
     $('board-text').classList.toggle('board-empty', !boardLatest.text);
     $('board-meta').textContent = boardMetadata(boardLatest);
     const conflict = boardEditing && boardLatest.revision !== boardBaseRevision;
@@ -206,8 +220,8 @@
     }
     if (!$('board-form').reportValidity()) return;
     const text = $('board-draft').value, editorName = $('board-editor-name').value.trim();
-    if (text.length > 20000 || editorName.length > 40) {
-      formError('board-error', new Error('公告最多 20,000 字符，修改者姓名最多 40 字符。')); return;
+    if (text.length > 20000 || !editorName || editorName.length > 40) {
+      formError('board-error', new Error('公告最多 20,000 字符；请填写 1–40 字的修改者姓名。')); return;
     }
     boardSaving = true; $('board-error').hidden = true; renderBoard();
     try {
@@ -247,8 +261,50 @@
     $('server-list').innerHTML = visible.map((item) => {
       const s = item.snapshot, status = effectiveStatus(item), pending = status === 'unconfigured';
       const jobs = (item.jobs || []).filter((j) => j.state !== 'ended');
-      return `<button type="button" class="server-card ${item.id === selectedId ? 'selected' : ''} ${pending ? 'pending' : ''}" data-server="${esc(item.id)}" data-focus-key="server-${esc(item.id)}" aria-pressed="${item.id === selectedId}"><div class="server-card-heading"><span class="server-icon">${svg('server')}</span><div class="server-card-title"><h3>${esc(item.name)}</h3><div class="server-id">${esc(item.id)}</div></div>${statusBadge(status)}</div><div class="server-platform-row"><span class="platform-badge">${platformLabel(item)}</span>${numeric(s?.cpu?.logical_processors) ? `<span>${count(s.cpu.logical_processors)} 逻辑处理器</span>` : ''}</div>${pending ? '<div class="pending-copy"><strong>尚未配置监测连接</strong>接入后将显示硬件、计算任务和 SSH 状态。</div>' : `<div class="server-card-body"><div><div class="mini-label"><span>CPU${status !== 'online' ? ' · 上次采样' : ''}</span><b>${percent(s?.cpu?.percent)}</b></div>${meter(s?.cpu?.percent)}</div><div><div class="mini-label"><span>内存</span><b>${percent(s?.memory?.percent)}</b></div>${meter(s?.memory?.percent,'teal')}</div></div>`}<div class="server-card-footer"><span>${pending ? '等待配置' : s ? `${jobs.length} 个计算任务 · ${count(s.ssh?.tcp_connections)} 个 SSH 连接` : '尚未获得有效采样'}</span><span>${pending ? '—' : item.id === selectedId ? '当前查看' : '查看详情 →'}</span></div></button>`;
+      return `<article class="server-card ${item.id === selectedId ? 'selected' : ''} ${pending ? 'pending' : ''}"><button type="button" class="server-card-select" data-server="${esc(item.id)}" data-focus-key="server-${esc(item.id)}" aria-pressed="${item.id === selectedId}" aria-label="查看 ${esc(item.name)} 的状态"><div class="server-card-heading"><span class="server-icon">${svg('server')}</span><div class="server-card-title"><h3>${esc(item.name)}</h3><div class="server-id">${esc(item.id)}</div></div>${statusBadge(status)}</div><div class="server-platform-row"><span class="platform-badge">${platformLabel(item)}</span>${numeric(s?.cpu?.logical_processors) ? `<span>${count(s.cpu.logical_processors)} 逻辑处理器</span>` : ''}</div>${pending ? '<div class="pending-copy"><strong>尚未配置监测连接</strong>接入后将显示硬件、计算任务和 SSH 状态。</div>' : `<div class="server-card-body"><div><div class="mini-label"><span>CPU${status !== 'online' ? ' · 上次采样' : ''}</span><b>${percent(s?.cpu?.percent)}</b></div>${meter(s?.cpu?.percent)}</div><div><div class="mini-label"><span>内存</span><b>${percent(s?.memory?.percent)}</b></div>${meter(s?.memory?.percent,'teal')}</div></div>`}<div class="server-card-footer"><span>${pending ? '等待配置' : s ? `${jobs.length} 个计算任务 · ${count(s.ssh?.tcp_connections)} 个 SSH 连接` : '尚未获得有效采样'}</span><span>${pending ? '—' : item.id === selectedId ? '当前查看' : '查看详情 →'}</span></div></button><div class="server-card-controls"><button type="button" class="server-name-button" data-rename-server="${esc(item.id)}" data-focus-key="rename-${esc(item.id)}" aria-label="修改 ${esc(item.name)} 的名称">修改名称</button></div></article>`;
     }).join('');
+  }
+  function openServerName(id) {
+    const item = state?.servers?.find((entry) => entry.id === id);
+    if (!item || renameSaving) return;
+    renameTargetId = id;
+    $('server-name-context').textContent = `服务器 ID：${item.id}`;
+    $('server-name-input').value = item.name || '';
+    $('server-name-error').hidden = true;
+    $('server-name-dialog').showModal();
+    $('server-name-input').focus();
+    $('server-name-input').select();
+  }
+  async function saveServerName(event) {
+    event.preventDefault();
+    if (renameSaving || !renameTargetId) return;
+    if (!$('server-name-form').reportValidity()) return;
+    const id = renameTargetId, name = $('server-name-input').value.trim();
+    if (!name || name.length > 40) {
+      formError('server-name-error', new Error('服务器名称需要 1–40 个字符，不能只填空格。')); return;
+    }
+    renameSaving = true;
+    $('save-server-name').disabled = true;
+    $('save-server-name').textContent = '正在保存…';
+    $('server-name-error').hidden = true;
+    let result;
+    try {
+      result = await api(`/api/servers/${encodeURIComponent(id)}/name`, 'PUT', {name});
+      if (!result.ok || result.id !== id || typeof result.name !== 'string') throw new Error('服务器未确认名称修改，请刷新后核对。');
+    } catch (error) {
+      formError('server-name-error', error);
+      return;
+    } finally {
+      renameSaving = false;
+      $('save-server-name').disabled = false;
+      $('save-server-name').textContent = '保存名称';
+    }
+    const item = state?.servers?.find((entry) => entry.id === id);
+    if (item) item.name = result.name;
+    $('server-name-dialog').close();
+    showToast('服务器名称已更新，所有人将在刷新后看到。');
+    if (state) render();
+    await refresh(true);
   }
   function metricCard(label, icon, value, unit, detail, valuePercent, color = '') {
     return `<article class="metric-card"><div class="metric-title">${esc(label)}${svg(icon)}</div><div class="metric-value">${esc(value)}${unit ? `<small>${esc(unit)}</small>` : ''}</div><p class="metric-detail">${esc(detail)}</p>${valuePercent !== undefined ? meter(valuePercent,color) : ''}</article>`;
@@ -299,10 +355,21 @@
     if (numeric(estimate.remaining_seconds)) return `约剩 ${duration(estimate.remaining_seconds)}`;
     return '暂无可靠估算';
   }
+  const isGroupedJob = (job) => Array.isArray(job.grouped_job_ids) && job.grouped_job_ids.length > 0;
+  const canGroupJob = (item, job) => canClaim(item) && !['ended','unknown'].includes(job.state) && !job.claim && !isGroupedJob(job);
+  function renderGroupToolbar(item, jobs) {
+    const eligible = new Set((jobs || []).filter((job) => canGroupJob(item, job)).map((job) => job.id));
+    for (const id of groupSelection) if (!eligible.has(id)) groupSelection.delete(id);
+    $('group-toolbar').hidden = !item?.snapshot || item.status === 'unconfigured';
+    $('group-selection-count').textContent = `已选 ${groupSelection.size} 项${effectiveStatus(item || {status:'offline'}) !== 'online' ? ' · 服务器未在线' : ''}`;
+    $('create-job-group').disabled = groupSubmitting || groupSelection.size < 2 || groupSelection.size > 32;
+    $('clear-job-group').hidden = groupSelection.size === 0;
+  }
   function renderJobs() {
     const item=server();
+    const jobs=Array.isArray(item?.jobs)?item.jobs:[];
+    renderGroupToolbar(item,jobs);
     if (!item) {$('task-count').textContent='—';$('task-content').innerHTML=empty('尚未接入服务器','接入后显示计算任务。');return;}
-    const jobs=Array.isArray(item.jobs)?item.jobs:[];
     $('task-count').textContent=item.status==='unconfigured'||!item.snapshot?'—':String(jobs.filter((job)=>job.state!=='ended').length);
     if (item.status==='unconfigured') {$('task-content').innerHTML=empty('等待接入服务器','接入前无法判断任务状态。');return;}
     if (!item.snapshot) {$('task-content').innerHTML=empty('任务状态未知','尚未取得有效采样，不能判断是否空闲。');return;}
@@ -316,12 +383,82 @@
   function jobRow(item,job) {
     const claim=job.claim, open=expanded.has(job.id),overdue=validDate(claim?.expected_end)&&new Date(claim.expected_end).getTime()<Date.now()&&job.state!=='ended';
     const action=claim?.can_edit?`<button type="button" class="button link-button" data-edit="${esc(job.id)}" data-focus-key="edit-${esc(job.id)}">编辑登记</button>`:claim?'<span class="subtle">已登记</span>':`<button type="button" class="button link-button" data-claim="${esc(job.id)}" data-focus-key="claim-${esc(job.id)}" ${canClaim(item)&&job.state!=='ended'?'':'disabled'}>认领任务</button>`;
-    return `<tr class="job-row"><td><div class="task-name">${esc(claim?.task_name||job.name||job.software||'计算任务')}</div>${statusBadge(job.state,jobLabels[job.state]||'状态未知')}<span class="task-meta"> ${esc(job.software||'未知软件')}</span><p class="task-meta">${count(job.process_count)} 个进程 · 已运行 ${esc(duration(job.elapsed_seconds))}</p></td><td data-label="使用成员"><span class="task-owner ${claim?'':'unclaimed-text'}">${esc(claim?.owner_name||'待认领')}</span>${claim?.can_edit?'<p class="task-meta">本浏览器登记</p>':''}</td><td data-label="资源占用"><div class="load-value">${percent(job.cpu_pct)} <span class="task-meta">CPU</span></div><p class="task-meta">${bytes(job.memory_bytes)} 内存</p></td><td class="eta-cell" data-label="预计结束"><div class="eta-line ${overdue?'overdue':''}"><span class="eta-label">人工</span><strong>${validDate(claim?.expected_end)?esc(fullTime(claim.expected_end))+(overdue?' · 已超过预期':''):'未填写'}</strong></div><div class="eta-line log"><span class="eta-label">日志</span><strong>${esc(autoEstimate(job.estimate))}</strong></div>${numeric(job.estimate?.progress_pct)?`<p class="task-meta">日志进度 ${percent(job.estimate.progress_pct)}</p>`:''}</td><td class="action-cell"><div class="task-actions">${action}<button type="button" class="detail-button" data-detail="${esc(job.id)}" data-focus-key="detail-${esc(job.id)}" aria-expanded="${open}"><span aria-hidden="true">${open?'−':'+'}</span>进程详情</button></div></td></tr>${open?`<tr class="detail-row"><td colspan="5">${jobDetails(item,job)}</td></tr>`:''}`;
+    const grouped=isGroupedJob(job);
+    const groupChoice=canGroupJob(item,job)?`<label class="job-group-select"><input type="checkbox" data-group-job="${esc(job.id)}" data-focus-key="group-${esc(job.id)}" aria-label="将 ${esc(job.name||job.software||'计算任务')} 加入组合" ${groupSelection.has(job.id)?'checked':''}><span>加入组合</span></label>`:'';
+    const groupBadge=grouped?`<span class="job-grouped-tag">已归组 · ${job.grouped_job_ids.length} 项原任务</span>`:'';
+    const ungroupAction=grouped?`<button type="button" class="detail-button" data-ungroup="${esc(job.id)}" data-focus-key="ungroup-${esc(job.id)}" ${claim||ungrouping.has(job.id)?'disabled':''} title="${claim?'请先释放任务登记':'取消归组并恢复原任务'}">取消归组</button>${claim?'<span class="task-meta">先释放登记后可取消归组</span>':''}`:'';
+    return `<tr class="job-row ${groupSelection.has(job.id) ? 'group-selected' : ''}"><td>${groupChoice}<div class="task-name">${esc(claim?.task_name||job.name||job.software||'计算任务')}</div>${groupBadge}${statusBadge(job.state,jobLabels[job.state]||'状态未知')}<span class="task-meta"> ${esc(job.software||'未知软件')}</span><p class="task-meta">${count(job.process_count)} 个进程 · 已运行 ${esc(duration(job.elapsed_seconds))}</p></td><td data-label="使用成员"><span class="task-owner ${claim?'':'unclaimed-text'}">${esc(claim?.owner_name||'待认领')}</span>${claim?.can_edit?'<p class="task-meta">本浏览器登记</p>':''}</td><td data-label="资源占用"><div class="load-value">${percent(job.cpu_pct)} <span class="task-meta">CPU</span></div><p class="task-meta">${bytes(job.memory_bytes)} 内存</p></td><td class="eta-cell" data-label="预计结束"><div class="eta-line ${overdue?'overdue':''}"><span class="eta-label">人工</span><strong>${validDate(claim?.expected_end)?esc(fullTime(claim.expected_end))+(overdue?' · 已超过预期':''):'未填写'}</strong></div><div class="eta-line log"><span class="eta-label">日志</span><strong>${esc(autoEstimate(job.estimate))}</strong></div>${numeric(job.estimate?.progress_pct)?`<p class="task-meta">日志进度 ${percent(job.estimate.progress_pct)}</p>`:''}</td><td class="action-cell"><div class="task-actions">${action}${ungroupAction}<button type="button" class="detail-button" data-detail="${esc(job.id)}" data-focus-key="detail-${esc(job.id)}" aria-expanded="${open}"><span aria-hidden="true">${open?'−':'+'}</span>进程详情</button></div></td></tr>${open?`<tr class="detail-row"><td colspan="5">${jobDetails(item,job)}</td></tr>`:''}`;
   }
   function jobDetails(item,job) {
     const keys=new Set(job.process_keys||[]),pids=new Set(job.pids||[]);
     const processes=(item.snapshot?.processes||[]).filter((p)=>keys.size?keys.has(p.key):pids.has(p.pid));
     return `<div class="job-detail-grid"><div>${processes.length?`<table class="process-table"><caption>归组进程 · CPU 为整机占比</caption><thead><tr><th>进程</th><th>PID</th><th>CPU</th><th>内存</th><th>GPU 显存</th></tr></thead><tbody>${processes.map((p)=>`<tr><td>${esc(p.name)}</td><td>${esc(p.pid ?? '—')}</td><td>${percent(p.cpu_pct)}</td><td>${bytes(p.memory_bytes)}</td><td>${bytes(p.gpu_memory_bytes)}</td></tr>`).join('')}</tbody></table>`:'<p class="subtle">当前采样中未找到这些进程。</p>'}</div><div class="detail-notes"><p><b>任务开始</b> ${esc(fullTime(job.started_at))}</p><p><b>登记备注</b> ${esc(job.claim?.notes||'未填写')}</p><p><b>估算说明</b> ${esc(job.estimate?.detail||'尚无可用日志估算。')}</p>${job.estimate?.source?`<p><b>日志来源</b> ${esc(job.estimate.source)}</p>`:''}<p>日志达到目标不等同于求解成功；请以计算结果和软件日志为准。</p></div></div>`;
+  }
+  function selectedGroupJobs(item) {
+    return (item?.jobs || []).filter((job) => groupSelection.has(job.id) && canGroupJob(item,job));
+  }
+  function openJobGroup() {
+    const item=server(), selected=selectedGroupJobs(item);
+    if (selected.length < 2 || selected.length > 32) {
+      showToast('请先在当前服务器选择 2–32 条未认领任务。'); return;
+    }
+    $('job-group-context').textContent = `${item.name} · ${selected.length} 条任务：${selected.slice(0,3).map((job)=>job.name||job.software||job.id).join('、')}${selected.length>3?' 等':''}`;
+    $('job-group-name').value='';
+    $('job-group-error').hidden=true;
+    $('job-group-dialog').showModal();
+    $('job-group-name').focus();
+  }
+  async function saveJobGroup(event) {
+    event.preventDefault();
+    if (groupSubmitting || !$('job-group-form').reportValidity()) return;
+    const item=server(), selected=selectedGroupJobs(item), name=$('job-group-name').value.trim();
+    if (!item || selected.length<2 || selected.length>32) {
+      formError('job-group-error',new Error('所选任务已变化，请关闭窗口后重新选择 2–32 条未认领任务。')); return;
+    }
+    if (!name || name.length>120) {
+      formError('job-group-error',new Error('组合名称需要 1–120 个字符，不能只填空格。')); return;
+    }
+    groupSubmitting=true;
+    $('save-job-group').disabled=true;
+    $('save-job-group').textContent='正在归组…';
+    $('job-group-error').hidden=true;
+    renderGroupToolbar(item,item.jobs);
+    try {
+      const result=await api('/api/job-groups','POST',{host_id:item.id,job_ids:selected.map((job)=>job.id),name});
+      if (!result.ok || !result.group?.id) throw new Error('服务器未确认归组结果，请刷新后核对。');
+    } catch(error) {
+      formError('job-group-error',error);
+      return;
+    } finally {
+      groupSubmitting=false;
+      $('save-job-group').disabled=false;
+      $('save-job-group').textContent='确认归组';
+      renderGroupToolbar(server(),server()?.jobs);
+    }
+    $('job-group-dialog').close();
+    groupSelection.clear();
+    showToast('任务已归为一条，现在可以一次认领。');
+    await refresh(true);
+  }
+  async function ungroupJob(id, button) {
+    const job=server()?.jobs?.find((entry)=>entry.id===id);
+    if (!job || !isGroupedJob(job) || ungrouping.has(id)) return;
+    if (job.claim) {showToast('请先释放任务登记，再取消归组。');return;}
+    ungrouping.add(id);
+    button.disabled=true;
+    button.textContent='取消中…';
+    try {
+      const result=await api(`/api/job-groups/${encodeURIComponent(id)}`,'DELETE');
+      if (!result.ok) throw new Error('服务器未确认取消归组，请刷新后核对。');
+      showToast('已取消归组，原任务会重新分别显示。');
+      await refresh(true);
+    } catch(error) {
+      showToast(error.message);
+      if (error.status===409) await refresh(true);
+    } finally {
+      ungrouping.delete(id);
+      if (state) renderJobs();
+    }
   }
   function renderSSH() {
     const item=server();
@@ -382,7 +519,7 @@
   function withDisclosure(callback,container){const open=new Set([...$(container).querySelectorAll('details[open][data-preserve]')].map((d)=>d.dataset.preserve));callback();$(container).querySelectorAll('details[data-preserve]').forEach((d)=>d.open=open.has(d.dataset.preserve));}
   renderHardware=()=>withDisclosure(renderHardwareRaw,'hardware-content');
   renderSSH=()=>withDisclosure(renderSSHRaw,'ssh-content');
-  $('server-list').addEventListener('click',(event)=>{const target=event.target.closest('[data-server]');if(!target)return;selectedId=target.dataset.server;expanded.clear();render();});
+  $('server-list').addEventListener('click',(event)=>{const rename=event.target.closest('[data-rename-server]');if(rename){openServerName(rename.dataset.renameServer);return;}const target=event.target.closest('[data-server]');if(!target)return;selectedId=target.dataset.server;expanded.clear();groupSelection.clear();render();});
   $('server-search').addEventListener('input',(event)=>{serverQuery=event.target.value;if(state)renderServers();});
   $('server-search-clear').addEventListener('click',()=>{serverQuery='';$('server-search').value='';if(state)renderServers();$('server-search').focus();});
   $('board-edit').addEventListener('click',openBoard);
@@ -391,12 +528,20 @@
   $('board-reviewed').addEventListener('click',()=>resolveBoardConflict(false));
   $('board-load-latest').addEventListener('click',()=>resolveBoardConflict(true));
   $('board-form').addEventListener('submit',saveBoard);
-  $('task-content').addEventListener('click',(event)=>{const claim=event.target.closest('[data-claim],[data-edit]');if(claim){openClaim(claim.dataset.claim||claim.dataset.edit);return;}const detail=event.target.closest('[data-detail]');if(detail){expanded.has(detail.dataset.detail)?expanded.delete(detail.dataset.detail):expanded.add(detail.dataset.detail);preserveFocus(renderJobs);}});
+  $('task-content').addEventListener('click',(event)=>{const ungroup=event.target.closest('[data-ungroup]');if(ungroup){ungroupJob(ungroup.dataset.ungroup,ungroup);return;}const claim=event.target.closest('[data-claim],[data-edit]');if(claim){openClaim(claim.dataset.claim||claim.dataset.edit);return;}const detail=event.target.closest('[data-detail]');if(detail){expanded.has(detail.dataset.detail)?expanded.delete(detail.dataset.detail):expanded.add(detail.dataset.detail);preserveFocus(renderJobs);}});
+  $('task-content').addEventListener('change',(event)=>{const check=event.target.closest('[data-group-job]');if(!check)return;check.checked?groupSelection.add(check.dataset.groupJob):groupSelection.delete(check.dataset.groupJob);renderGroupToolbar(server(),server()?.jobs||[]);check.closest('.job-row')?.classList.toggle('group-selected',check.checked);});
+  $('create-job-group').addEventListener('click',openJobGroup);
+  $('clear-job-group').addEventListener('click',()=>{groupSelection.clear();renderJobs();});
+  $('job-group-form').addEventListener('submit',saveJobGroup);
+  $('job-group-dialog').addEventListener('cancel',(event)=>{if(groupSubmitting)event.preventDefault();});
   document.querySelectorAll('[data-filter]').forEach((button)=>button.addEventListener('click',()=>{filter=button.dataset.filter;document.querySelectorAll('[data-filter]').forEach((b)=>{b.classList.toggle('selected',b===button);b.setAttribute('aria-pressed',String(b===button));});renderJobs();}));
   $('task-search').addEventListener('input',(event)=>{query=event.target.value;renderJobs();});
-  $('refresh-button').addEventListener('click',()=>{clearTimeout(timer);refresh();});
+  $('refresh-button').addEventListener('click',()=>{clearTimeout(timer);refresh(true);});
+  $('server-name-form').addEventListener('submit',saveServerName);
+  $('server-name-dialog').addEventListener('cancel',(event)=>{if(renameSaving)event.preventDefault();});
+  $('server-name-dialog').addEventListener('close',()=>{renameTargetId=null;});
   $('claim-form').addEventListener('submit',saveClaim);$('release-button').addEventListener('click',releaseClaim);
-  document.querySelectorAll('[data-close]').forEach((button)=>button.addEventListener('click',()=>{if(!submitting)$(button.dataset.close).close();}));
+  document.querySelectorAll('[data-close]').forEach((button)=>button.addEventListener('click',()=>{if(!submitting&&!(renameSaving&&button.dataset.close==='server-name-dialog')&&!(groupSubmitting&&button.dataset.close==='job-group-dialog'))$(button.dataset.close).close();}));
   $('claim-dialog').addEventListener('cancel',(event)=>{if(submitting)event.preventDefault();});
   $('identity-button').addEventListener('click',()=>{$('identity-input').value=state?.identity?.name||'';$('identity-error').hidden=true;$('identity-dialog').showModal();$('identity-input').focus();});
   $('identity-form').addEventListener('submit',async(event)=>{event.preventDefault();const name=$('identity-input').value.trim();if(!name){formError('identity-error',new Error('请填写姓名。'));return;}const submit=event.target.querySelector('[type="submit"]');submit.disabled=true;try{await api('/api/identity','POST',{name});$('identity-dialog').close();showToast('姓名已保存，下次登记时会自动填写。');await refresh();}catch(error){formError('identity-error',error);}finally{submit.disabled=false;}});

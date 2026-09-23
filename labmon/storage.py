@@ -12,6 +12,8 @@ import threading
 import time
 import uuid
 
+from .board_segments import initial_segments, reconcile_segments
+
 
 class ConflictError(Exception):
     pass
@@ -56,7 +58,24 @@ class Store:
                     updated_by TEXT NOT NULL DEFAULT ''
                 );
                 INSERT OR IGNORE INTO shared_board(id) VALUES(1);
+                CREATE TABLE IF NOT EXISTS server_names (
+                    host_id TEXT PRIMARY KEY, name TEXT NOT NULL, updated_at REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS job_groups (
+                    id TEXT PRIMARY KEY, host_id TEXT NOT NULL, name TEXT NOT NULL,
+                    job_ids TEXT NOT NULL, created_at REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS board_segments (
+                    id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL
+                );
             """)
+            exists = db.execute("SELECT 1 FROM board_segments WHERE id=1").fetchone()
+            if not exists:
+                old = db.execute("SELECT text,updated_at FROM shared_board WHERE id=1").fetchone()
+                whole_board_time = (datetime.fromtimestamp(old["updated_at"], timezone.utc).isoformat()
+                                    if old["updated_at"] is not None else None)
+                db.execute("INSERT INTO board_segments(id,payload) VALUES(1,?)",
+                           (json.dumps(initial_segments(old["text"], whole_board_time), ensure_ascii=False),))
 
     @contextmanager
     def _connect(self):
@@ -90,12 +109,71 @@ class Store:
             db.execute("UPDATE sessions SET name=?,last_seen=? WHERE id=?",
                        (name, time.time(), self.session_key(token)))
 
+    def server_names(self):
+        with self._connect() as db:
+            rows = db.execute("SELECT host_id,name FROM server_names").fetchall()
+        return {row["host_id"]: row["name"] for row in rows}
+
+    def rename_server(self, host_id: str, name: str):
+        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 40 or "\x00" in name:
+            raise ValueError("服务器名称需为 1–40 个字符")
+        name = name.strip()
+        with self._lock, self._connect() as db:
+            db.execute("INSERT INTO server_names(host_id,name,updated_at) VALUES(?,?,?) "
+                       "ON CONFLICT(host_id) DO UPDATE SET name=excluded.name,updated_at=excluded.updated_at",
+                       (host_id, name, time.time()))
+        return name
+
+    def job_groups(self, host_id: str | None = None):
+        with self._connect() as db:
+            rows = db.execute("SELECT * FROM job_groups WHERE (? IS NULL OR host_id=?) ORDER BY created_at",
+                              (host_id, host_id)).fetchall()
+        return [{"id": row["id"], "host_id": row["host_id"], "name": row["name"],
+                 "job_ids": json.loads(row["job_ids"])} for row in rows]
+
+    def create_job_group(self, host_id: str, job_ids: list[str], name: str):
+        if not isinstance(job_ids, list) or len(job_ids) < 2 or len(job_ids) > 32 or any(
+                not isinstance(job_id, str) or not job_id for job_id in job_ids) or len(set(job_ids)) != len(job_ids):
+            raise ValueError("请选择同一服务器上的 2–32 个不同任务")
+        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 120 or "\x00" in name:
+            raise ValueError("归组名称需为 1–120 个字符")
+        group = {"id": uuid.uuid4().hex[:24], "host_id": host_id, "name": name.strip(), "job_ids": job_ids}
+        with self._lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            rows = db.execute("SELECT job_ids FROM job_groups WHERE host_id=?", (host_id,)).fetchall()
+            assigned = {item for row in rows for item in json.loads(row["job_ids"])}
+            if assigned.intersection(job_ids):
+                raise ConflictError("所选任务已有归组，请刷新后重试")
+            placeholders = ",".join("?" for _ in job_ids)
+            claimed = db.execute(f"SELECT 1 FROM claims WHERE host_id=? AND job_id IN ({placeholders}) "
+                                 "AND released_at IS NULL AND ended_at IS NULL LIMIT 1", (host_id, *job_ids)).fetchone()
+            if claimed:
+                raise ConflictError("所选任务已有登记，请先释放原登记再归组")
+            db.execute("INSERT INTO job_groups(id,host_id,name,job_ids,created_at) VALUES(?,?,?,?,?)",
+                       (group["id"], host_id, name.strip(), json.dumps(job_ids), time.time()))
+        return group
+
+    def delete_job_group(self, group_id: str):
+        with self._lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT host_id FROM job_groups WHERE id=?", (group_id,)).fetchone()
+            if row is None:
+                raise MissingError("归组不存在")
+            active = db.execute("SELECT 1 FROM claims WHERE host_id=? AND job_id=? "
+                                "AND released_at IS NULL AND ended_at IS NULL LIMIT 1",
+                                (row["host_id"], group_id)).fetchone()
+            if active:
+                raise ConflictError("归组已被认领，请先释放登记")
+            db.execute("DELETE FROM job_groups WHERE id=?", (group_id,))
+
     def board(self):
         with self._connect() as db:
             row = db.execute("SELECT text,revision,updated_at,updated_by FROM shared_board WHERE id=1").fetchone()
+            segments = json.loads(db.execute("SELECT payload FROM board_segments WHERE id=1").fetchone()["payload"])
         result = dict(row)
         if result["updated_at"] is not None:
             result["updated_at"] = datetime.fromtimestamp(result["updated_at"], timezone.utc).isoformat()
+        result["paragraphs"] = segments
         return result
 
     def update_board(self, text: str, revision: int, editor_name: str):
@@ -103,16 +181,23 @@ class Store:
             raise ValueError("共享备注最多 20000 个字符，不能包含空字符")
         if type(revision) is not int or revision < 0:
             raise ValueError("共享备注版本无效，请重新读取")
-        if not isinstance(editor_name, str) or len(editor_name.strip()) > 40 or "\x00" in editor_name:
-            raise ValueError("修改者姓名最多 40 个字符")
+        if not isinstance(editor_name, str) or not 1 <= len(editor_name.strip()) <= 40 or "\x00" in editor_name:
+            raise ValueError("请填写 1–40 个字符的修改者姓名")
+        text = text.replace("\r\n", "\n")
         with self._lock, self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            previous = json.loads(db.execute("SELECT payload FROM board_segments WHERE id=1").fetchone()["payload"])
+            now = time.time()
+            moment = datetime.fromtimestamp(now, timezone.utc).isoformat()
             updated = db.execute("UPDATE shared_board SET text=?,revision=revision+1,updated_at=?,updated_by=? WHERE id=1 AND revision=?",
-                (text.replace("\r\n", "\n"), time.time(), editor_name.strip(), revision))
+                (text, now, editor_name.strip(), revision))
             if updated.rowcount != 1:
                 raise ConflictError("其他成员已更新共享备注。你的草稿已保留，请核对最新版后再保存")
+            segments = reconcile_segments(previous, text, editor_name.strip(), moment)
+            db.execute("UPDATE board_segments SET payload=? WHERE id=1",
+                       (json.dumps(segments, ensure_ascii=False),))
             row = db.execute("SELECT text,revision,updated_at,updated_by FROM shared_board WHERE id=1").fetchone()
-        return {**dict(row), "updated_at": datetime.fromtimestamp(row["updated_at"], timezone.utc).isoformat()}
+        return {**dict(row), "updated_at": moment, "paragraphs": segments}
 
     @staticmethod
     def _decode(row, session_id: str | None = None):

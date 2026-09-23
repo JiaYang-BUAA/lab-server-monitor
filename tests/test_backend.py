@@ -296,6 +296,28 @@ class HubTests(unittest.TestCase):
         self.runtime.poll_once()
         self.assertEqual(self.state()["servers"][0]["jobs"][0]["id"], first)
 
+    def test_manual_group_claim_survives_one_member_ending(self):
+        self.current = snapshot(self.now, [process(1), process(2, start=101)])
+        self.runtime.poll_once()
+        ids = [job["id"] for job in self.state()["servers"][0]["jobs"]]
+        group = self.runtime.create_job_group("lab-new", ids, "组合仿真")
+        claim_id = self.runtime.store.create(self.token, "lab-new", group["id"], claim_payload())
+        for _ in range(3):
+            self.now += 5
+            self.current = snapshot(self.now, [process(2, start=101)])
+            self.runtime.poll_once()
+        only = self.state()["servers"][0]["jobs"]
+        self.assertEqual(len(only), 1)
+        self.assertEqual(only[0]["id"], group["id"])
+        self.assertEqual(only[0]["claim"]["id"], claim_id)
+        self.assertIsNone(self.runtime.store.claim(claim_id)["ended_at"])
+        for _ in range(5):
+            self.now += 5
+            self.current = snapshot(self.now, [])
+            self.runtime.poll_once()
+        self.assertEqual(self.state()["servers"][0]["jobs"], [])
+        self.assertIsNotNone(self.runtime.store.claim(claim_id)["ended_at"])
+
     def test_pid_reuse_does_not_take_over_claim(self):
         self.runtime.poll_once()
         old = self.state()["servers"][0]["jobs"][0]
@@ -363,6 +385,49 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(self.request("GET", "/api/state", headers={"Host": "evil.example:" + str(self.server.server_port)})[0], 403)
         self.assertEqual(self.request("POST", "/api/identity", {"name": "A"}, headers={"Content-Type": "text/plain"})[0], 400)
 
+    def test_server_name_and_capacity_api(self):
+        self.runtime.servers["lab-new"]["snapshot"]["cpu"]["logical_processors"] = 64
+        self.runtime.servers["lab-new"]["snapshot"]["memory"] = {
+            "total_bytes": 128 * 1024 ** 3, "available_bytes": 80 * 1024 ** 3}
+        code, headers, raw = self.request("GET", "/api/capacity?host_id=lab-new&cpu_cores=16&memory_gb=32")
+        self.assertEqual(code, 200)
+        self.assertNotIn("Set-Cookie", headers)  # Automation clients do not create browser identities.
+        report = json.loads(raw)
+        self.assertEqual(report["servers"][0]["verdict"], "likely_available")
+        self.assertEqual(self.request("GET", "/api/capacity?cpu_cores=1&cpu_cores=2")[0], 400)
+        self.assertEqual(self.request("GET", "/api/capacity?host_id=missing")[0], 404)
+        self.assertEqual(self.request("PUT", "/api/servers/lab-new/name", {"name": "  自定义服务器  "})[0], 200)
+        self.assertEqual(json.loads(self.request("GET", "/api/state")[2])["servers"][0]["name"], "自定义服务器")
+        self.assertEqual(self.request("PUT", "/api/servers/lab-new/name", {"name": " "})[0], 400)
+        self.assertEqual(self.request("PUT", "/api/servers/missing/name", {"name": "其他"})[0], 404)
+        reloaded = HubRuntime(self.config, fetcher=self.runtime.fetcher, clock=lambda: self.now)
+        self.assertEqual(reloaded.servers["lab-new"]["name"], "自定义服务器")
+        reloaded.close()
+
+    def test_manual_group_is_one_claim_and_can_be_undone(self):
+        self.now += 5
+        self.current = snapshot(self.now, [process(1), process(2, start=101)])
+        self.runtime.poll_once()
+        ids = [job["id"] for job in self.runtime.servers["lab-new"]["jobs"]]
+        self.assertEqual(len(ids), 2)
+        code, _, raw = self.request("POST", "/api/job-groups",
+                                    {"host_id": "lab-new", "job_ids": ids, "name": "一次仿真"})
+        self.assertEqual(code, 200)
+        group_id = json.loads(raw)["group"]["id"]
+        code, headers, raw = self.request("GET", "/api/state")
+        job = json.loads(raw)["servers"][0]["jobs"][0]
+        self.assertEqual(job["id"], group_id)
+        self.assertEqual(job["process_count"], 2)
+        self.assertEqual(set(job["grouped_job_ids"]), set(ids))
+        cookie = headers["Set-Cookie"].split(";", 1)[0]
+        self.assertEqual(self.request("POST", "/api/claims", {**claim_payload(),
+                         "host_id": "lab-new", "job_id": group_id}, cookie)[0], 200)
+        claim_id = self.runtime.store.claims()[0]["id"]
+        self.assertEqual(self.request("DELETE", "/api/job-groups/" + group_id)[0], 409)
+        self.assertEqual(self.request("DELETE", "/api/claims/" + claim_id, {}, cookie)[0], 200)
+        self.assertEqual(self.request("DELETE", "/api/job-groups/" + group_id)[0], 200)
+        self.assertEqual(len(json.loads(self.request("GET", "/api/state")[2])["servers"][0]["jobs"]), 2)
+
     def test_public_https_origin_supports_board_without_accepting_http_writes(self):
         public = "https://lab.example.ts.net"
         self.server.public_origin = validate_public_origin(public)
@@ -382,7 +447,7 @@ class HTTPTests(unittest.TestCase):
         for private_value in ("private-machine", "10.0.0.12", "E:/private/job.sta", '"owner": "shared"'):
             self.assertNotIn(private_value, raw.decode())
         revision = public_state["board"]["revision"]
-        self.assertEqual(self.request("PUT", "/api/board", {"text": "公网公告", "revision": revision}, headers=headers)[0], 200)
+        self.assertEqual(self.request("PUT", "/api/board", {"text": "公网公告", "revision": revision, "editor_name": "测试者"}, headers=headers)[0], 200)
         self.assertEqual(self.request("GET", "/api/board", headers=headers)[0], 200)
         self.assertEqual(self.request("PUT", "/api/board", {"text": "wrong", "revision": revision + 1},
                                       headers={**headers, "Origin": "http://lab.example.ts.net"})[0], 403)

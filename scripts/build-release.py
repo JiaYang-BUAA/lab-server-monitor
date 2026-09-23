@@ -26,9 +26,9 @@ SOURCE_REQUIRED = (
     "scripts/install.ps1", "scripts/render-config.py", "scripts/download-dependencies.ps1",
     "scripts/collect-windows.ps1", "scripts/connect-server.py", "scripts/render-dashboard.py",
     "scripts/install-linux.sh", "scripts/configure-linux.py", "scripts/setup-ssh.ps1",
-    "scripts/setup-ssh.sh", "scripts/build-release.py", "docs/deployment.md",
+    "scripts/setup-ssh.sh", "scripts/build-release.py", "scripts/check-capacity.py", "docs/deployment.md",
     "docs/security.md", "docs/release-validation.md", "docs/linux-install.md",
-    "docs/linux-collector.md", "docs/ssh-setup.md", "docs/public-access.md",
+    "docs/linux-collector.md", "docs/ssh-setup.md", "docs/public-access.md", "docs/codex-preflight.md",
 )
 SOURCE_GLOBS = ("labmon/*.py", "tests/*.py")
 SOURCE_OPTIONAL = (".github/workflows/test.yml",)

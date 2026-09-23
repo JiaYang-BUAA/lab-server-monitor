@@ -5,7 +5,6 @@ import argparse
 from collections import deque
 import copy
 from datetime import datetime, timezone
-import hashlib
 import hmac
 import http.client
 from http.cookies import SimpleCookie
@@ -23,10 +22,12 @@ import sys
 import threading
 import time
 from urllib.error import HTTPError, URLError
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 from urllib.request import Request, urlopen
 
 from .estimates import Estimator, iso
+from .grouping import group_jobs
+from .capacity import GIB, capacity_report
 from .storage import ConflictError, MissingError, OwnershipError, Store
 
 LOG = logging.getLogger("labmon")
@@ -57,64 +58,6 @@ def nullable_sum(values):
     values = list(values)
     # An incomplete total should remain unknown instead of understating load.
     return sum(values) if values and all(number(x) is not None for x in values) else None
-
-
-def group_jobs(host_id: str, processes: list[dict], now: float | None = None):
-    now = time.time() if now is None else now
-    valid = {p["pid"]: p for p in processes if isinstance(p.get("pid"), int) and p.get("key")}
-    selected = {}
-    for pid, process in valid.items():
-        software, role = process.get("software", "unknown"), process.get("role", "unknown")
-        if software in {"system", "unknown", "other", ""} or role in {"service", "system"}:
-            continue
-        if timestamp(process.get("start_time")) is None:
-            continue  # Still visible in snapshot.processes; cannot safely identify a task.
-        if software == "general" and role not in {"solver", "application", "launcher"}:
-            cpu, memory = number(process.get("cpu_pct")), number(process.get("memory_bytes"))
-            if cpu is None or cpu < 0.05 or memory is None or memory < 256 * 1024 * 1024:
-                continue
-        selected[pid] = process
-    groups = {}
-    for pid, process in selected.items():
-        root, visited = process, {pid}
-        while True:
-            parent = selected.get(root.get("parent_pid"))
-            if not parent or parent["pid"] in visited:
-                break
-            parent_start, child_start = timestamp(parent.get("start_time")), timestamp(root.get("start_time"))
-            if parent_start is None or child_start is None or parent_start > child_start:
-                break  # Parent PID has been reused, or the relation is unverifiable.
-            if parent.get("software") != process.get("software"):
-                break
-            visited.add(parent["pid"])
-            root = parent
-        root_key, start = root["key"], timestamp(root.get("start_time"))
-        parent = valid.get(root.get("parent_pid"))
-        if parent and str(parent.get("name", "")).casefold().removesuffix(".exe") == "hydra_pmi_proxy":
-            parent_start = timestamp(parent.get("start_time"))
-            if parent["pid"] not in visited and parent_start is not None and parent_start <= start:
-                # A live per-job MPI proxy can identify sibling solver ranks.
-                # Never follow its ancestors: hydra_service may serve many jobs.
-                # Keep software in the identity and count only selected solvers.
-                root_key = f"mpi\0{parent['key']}\0{process['software']}"
-                start = parent_start
-        groups.setdefault(root_key, {"root": root, "start": start, "members": []})["members"].append(process)
-    jobs = []
-    for root_key, group in groups.items():
-        members, root = group["members"], group["root"]
-        cpu = nullable_sum(p.get("cpu_pct") for p in members)
-        start = group["start"]
-        identity = hashlib.sha256(f"{host_id}\0{root_key}".encode()).hexdigest()[:24]
-        jobs.append({"id": identity, "host_id": host_id, "name": root.get("name", "计算任务"),
-                     "software": root.get("software", "unknown"),
-                     "state": "unknown" if cpu is None else "computing" if cpu >= 0.05 else "idle",
-                     "process_count": len(members), "pids": sorted(p["pid"] for p in members),
-                     "process_keys": sorted(p["key"] for p in members), "cpu_pct": cpu,
-                     "memory_bytes": nullable_sum(p.get("memory_bytes") for p in members),
-                     "started_at": iso(start) if start is not None else None,
-                     "elapsed_seconds": max(0, now - start) if start is not None else None,
-                     "claim": None, "estimate": None})
-    return sorted(jobs, key=lambda job: -(job["cpu_pct"] or 0))
 
 
 def validate_claim(payload: dict, previous: dict | None = None):
@@ -158,6 +101,32 @@ def validate_agent_url(value: str):
     if parsed.path not in {"", "/"}:
         raise ValueError("agent_url 不应包含路径")
     return value.rstrip("/")
+
+
+def parse_capacity_query(query: str):
+    values = parse_qs(query, keep_blank_values=True, max_num_fields=8)
+    if set(values) - {"host_id", "cpu_cores", "memory_gb", "gpu_vram_gb"} or any(len(items) != 1 for items in values.values()):
+        raise ValueError("容量查询参数无效")
+    host_id = values.get("host_id", [None])[0]
+    if host_id is not None and not host_id:
+        raise ValueError("host_id 不能为空")
+    requested = {"cpu_cores": 0, "memory_bytes": 0, "gpu_memory_bytes": 0}
+    if "cpu_cores" in values:
+        raw = values["cpu_cores"][0]
+        if not raw.isdecimal() or int(raw) > 4096:
+            raise ValueError("cpu_cores 需为 0–4096 的整数")
+        requested["cpu_cores"] = int(raw)
+    for source, target, maximum in (("memory_gb", "memory_bytes", 4096),
+                                    ("gpu_vram_gb", "gpu_memory_bytes", 1024)):
+        if source in values:
+            try:
+                amount = float(values[source][0])
+            except ValueError as exc:
+                raise ValueError(source + " 需为非负数") from exc
+            if not math.isfinite(amount) or amount < 0 or amount > maximum:
+                raise ValueError(source + " 超出允许范围")
+            requested[target] = math.ceil(amount * GIB)
+    return host_id, requested
 
 
 def validate_public_origin(value: str):
@@ -293,6 +262,8 @@ class HubRuntime:
         self.servers = {}
         self.server_configs = {}
         self._missing = {}
+        self._group_missing = {}
+        self._raw_jobs = {}
         self._recent_jobs = deque(maxlen=100)
         self.estimates = {}
         for server in config.get("servers", []):
@@ -309,6 +280,18 @@ class HubRuntime:
                 "status": "offline" if server.get("enabled", False) else "unconfigured", "last_seen": None,
                 "error": "尚未收到采集数据" if server.get("enabled", False) else None,
                 "snapshot": None, "jobs": [], "history": []}
+            self._raw_jobs[server_id] = []
+        for server_id, name in self.store.server_names().items():
+            if server_id in self.servers:
+                self.servers[server_id]["name"] = name
+
+    def rename_server(self, host_id: str, name: str):
+        with self.lock:
+            if host_id not in self.servers:
+                raise MissingError("服务器不存在")
+            name = self.store.rename_server(host_id, name)
+            self.servers[host_id]["name"] = name
+            return name
 
     def _fetch(self, config: dict, path: str, data: dict | None = None):
         body = json.dumps(data).encode("utf-8") if data is not None else None
@@ -349,7 +332,7 @@ class HubRuntime:
             self.stop_event.wait(max(0.1, self.poll_seconds - (time.monotonic() - started)))
 
     def _stable_jobs(self, host_id, jobs, healthy, processes=None, fresh=True):
-        previous = self.servers[host_id]["jobs"]
+        previous = self._raw_jobs[host_id]
         current_by_key = {p.get("key"): p for p in (processes or [])}
         used = set()
         for job in jobs:
@@ -399,6 +382,72 @@ class HubRuntime:
                 jobs.append(pending)
         return jobs
 
+    def _apply_groups(self, host_id, raw_jobs, fresh=False, healthy=False):
+        by_id = {job["id"]: job for job in raw_jobs}
+        hidden = set()
+        grouped = []
+        for group in self.store.job_groups(host_id):
+            members = [by_id[job_id] for job_id in group["job_ids"] if job_id in by_id]
+            missing_key = (host_id, group["id"])
+            if not members:
+                if fresh:
+                    self._group_missing[missing_key] = self._group_missing.get(missing_key, 0) + 1 if healthy else 0
+                if self._group_missing.get(missing_key, 0) >= 2:
+                    self.store.end_job(host_id, group["id"])
+                    self._group_missing.pop(missing_key, None)
+                continue
+            self._group_missing.pop(missing_key, None)
+            hidden.update(member["id"] for member in members)
+            starts = [timestamp(member.get("started_at")) for member in members]
+            starts = [start for start in starts if start is not None]
+            start = min(starts) if starts else None
+            pids = sorted({pid for member in members for pid in member["pids"]})
+            keys = sorted({key for member in members for key in member["process_keys"]})
+            cpu = nullable_sum(member.get("cpu_pct") for member in members)
+            software = {member["software"] for member in members}
+            states = {member["state"] for member in members}
+            grouped.append({"id": group["id"], "host_id": host_id, "name": group["name"],
+                            "software": next(iter(software)) if len(software) == 1 else "mixed",
+                            "state": "computing" if "computing" in states else "idle" if states == {"idle"} else "unknown",
+                            "grouped_job_ids": group["job_ids"], "process_count": len(pids), "pids": pids,
+                            "process_keys": keys, "cpu_pct": cpu,
+                            "memory_bytes": nullable_sum(member.get("memory_bytes") for member in members),
+                            "started_at": iso(start) if start is not None else None,
+                            "elapsed_seconds": max(0, self.clock() - start) if start is not None else None,
+                            "claim": None, "estimate": None})
+        return sorted([job for job in raw_jobs if job["id"] not in hidden] + grouped,
+                      key=lambda job: -(job["cpu_pct"] or 0))
+
+    def create_job_group(self, host_id: str, job_ids: list[str], name: str):
+        with self.lock:
+            if host_id not in self.servers:
+                raise MissingError("服务器不存在")
+            if not isinstance(job_ids, list) or len(job_ids) < 2 or len(job_ids) > 32 or any(
+                    not isinstance(job_id, str) or not job_id for job_id in job_ids) or len(set(job_ids)) != len(job_ids):
+                raise ValueError("请选择同一服务器上的 2–32 个不同任务")
+            server = self.servers[host_id]
+            last = timestamp(server["last_seen"])
+            if server["status"] != "online" or last is None or self.clock() - last > self.stale_seconds:
+                raise ConflictError("服务器数据已过期，刷新后再归组")
+            available = {job["id"] for job in self._raw_jobs[host_id]
+                         if job["state"] not in {"unknown", "ended"}}
+            if not set(job_ids).issubset(available):
+                raise ConflictError("所选任务已变化，请刷新后重新选择")
+            group = self.store.create_job_group(host_id, job_ids, name)
+            server["jobs"] = self._apply_groups(host_id, self._raw_jobs[host_id])
+            return group
+
+    def delete_job_group(self, group_id: str):
+        with self.lock:
+            group = next((group for group in self.store.job_groups() if group["id"] == group_id), None)
+            if group is None:
+                raise MissingError("归组不存在")
+            self.store.delete_job_group(group_id)
+            host_id = group["host_id"]
+            self._group_missing.pop((host_id, group_id), None)
+            if host_id in self.servers:
+                self.servers[host_id]["jobs"] = self._apply_groups(host_id, self._raw_jobs[host_id])
+
     def poll_once(self):
         # Bound concurrent network requests while polling configured servers.
         from concurrent.futures import ThreadPoolExecutor
@@ -437,7 +486,9 @@ class HubRuntime:
                 healthy = snapshot.get("process_status", snapshot.get("telemetry_status")) == "ok"
                 fresh = previous_seen is None or observed > previous_seen
                 state.update(snapshot=snapshot, last_seen=snapshot["observed_at"], status="online", error=None)
-                state["jobs"] = self._stable_jobs(host_id, group_jobs(host_id, snapshot["processes"], now), healthy, snapshot["processes"], fresh)
+                raw_jobs = self._stable_jobs(host_id, group_jobs(host_id, snapshot["processes"], now), healthy, snapshot["processes"], fresh)
+                self._raw_jobs[host_id] = raw_jobs
+                state["jobs"] = self._apply_groups(host_id, raw_jobs, fresh, healthy)
                 if not state["history"] or state["history"][-1]["at"] != snapshot["observed_at"]:
                     gpu_values = [number(gpu.get("utilization_pct")) for gpu in snapshot.get("gpus", [])]
                     gpu_values = [value for value in gpu_values if value is not None]
@@ -491,10 +542,27 @@ class HubRuntime:
                 job["estimate"] = estimate
         saved = self.store.claims(token, recent=True)
         persisted_recent = [dict(claim, state="ended" if claim["ended_at"] else "released") for claim in saved if claim["ended_at"] or claim["released_at"]]
+        grouped_members = {job_id for group in self.store.job_groups() for job_id in group["job_ids"]}
+        recent = [job for job in recent if job["id"] not in grouped_members]
         return {"updated_at": iso(self.clock()), "poll_seconds": self.poll_seconds,
                 "grafana_url": self.config.get("grafana_url"), "servers": servers,
                 "board": self.store.board(),
                 "recent_tasks": (persisted_recent + recent)[:50], "identity": {"name": identity}}
+
+    def capacity(self, host_id: str | None, requested: dict):
+        with self.lock:
+            if host_id is not None and host_id not in self.servers:
+                raise MissingError("服务器不存在")
+            servers = copy.deepcopy([server for server in self.servers.values()
+                                     if host_id is None or server["id"] == host_id])
+        counts = {}
+        for claim in self.store.claims():
+            counts[claim["host_id"]] = counts.get(claim["host_id"], 0) + 1
+        now = self.clock()
+        return {"updated_at": iso(now), "requested": requested,
+                "advisory": "仅依据瞬时负载估算，未预留资源；启动仿真前还需核对组内登记、求解器许可和实际需求。",
+                "servers": [capacity_report(server, requested, now, self.stale_seconds,
+                                            counts.get(server["id"], 0)) for server in servers]}
 
     def require_job(self, host_id, job_id):
         with self.lock:
@@ -709,6 +777,23 @@ class Handler(BaseHTTPRequestHandler):
             if self._public_request():
                 state = redact_public_state(state)
             return self._reply(200, state)
+        if path == "/api/capacity" and self.command in {"GET", "HEAD"}:
+            host_id, requested = parse_capacity_query(urlsplit(self.path).query)
+            return self._reply(200, self.server.runtime.capacity(host_id, requested))
+        name_match = re.fullmatch(r"/api/servers/([^/]+)/name", path)
+        if name_match and self.command == "PUT":
+            body = self._body()
+            host_id = unquote(name_match.group(1))
+            name = self.server.runtime.rename_server(host_id, body.get("name"))
+            return self._reply(200, {"ok": True, "id": host_id, "name": name})
+        if path == "/api/job-groups" and self.command == "POST":
+            body = self._body()
+            group = self.server.runtime.create_job_group(body.get("host_id"), body.get("job_ids"), body.get("name"))
+            return self._reply(200, {"ok": True, "group": group})
+        group_match = re.fullmatch(r"/api/job-groups/([a-f0-9]{24})", path)
+        if group_match and self.command == "DELETE":
+            self.server.runtime.delete_job_group(group_match.group(1))
+            return self._reply(200, {"ok": True})
         if path == "/api/board" and self.command in {"GET", "HEAD"}:
             self._session()
             return self._reply(200, self.server.runtime.store.board())
