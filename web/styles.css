@@ -119,6 +119,10 @@
 .server-subheading p{font-size:13px;color:var(--muted);margin-top:3px}
 .server-subheading .subtle{max-width:none;white-space:nowrap}
 .server-block .detail-grid{grid-template-columns:minmax(0,1.4fr) minmax(235px,1fr)}
+.server-block .detail-grid{align-items:stretch}
+.server-block .trend-panel{display:flex;flex-direction:column;min-height:0}
+.server-block .chart-access[open]{position:relative;flex:1;min-height:178px}
+.server-block .chart-access[open] .chart-data-scroll{position:absolute;top:33px;right:21px;bottom:15px;left:21px;max-height:none;overflow:auto}
 .server-block .metric-card{padding:15px 16px}
 .server-block .metric-value{font-size:28px;margin-top:10px}
 .server-block .task-table .task-col{width:19%}
@@ -163,7 +167,7 @@
 .board-paragraph-meta{font-weight:400}
 #board-draft{font-size:18px;font-weight:700}
 #board-draft::placeholder{font-weight:400}
-@media(max-width:900px){.server-block .storage-content{display:block}.server-block .disk-row+.disk-row{margin-top:12px}.server-block .network-row{margin-top:12px}}
+@media(max-width:900px){.server-block .storage-content{display:block}.server-block .disk-row+.disk-row{margin-top:12px}.server-block .network-row{margin-top:12px}.server-block .chart-access[open]{min-height:258px}.server-block .chart-access[open] .chart-data-scroll{right:16px;left:16px}}
 @media(max-width:680px){
   .server-stack{gap:16px}
   .server-block-header{padding:16px;align-items:flex-start}
