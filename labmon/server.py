@@ -547,7 +547,8 @@ class HubRuntime:
         return {"updated_at": iso(self.clock()), "poll_seconds": self.poll_seconds,
                 "grafana_url": self.config.get("grafana_url"), "servers": servers,
                 "board": self.store.board(),
-                "recent_tasks": (persisted_recent + recent)[:50], "identity": {"name": identity}}
+                "recent_tasks": (persisted_recent + recent)[:50], "identity": {"name": identity},
+                "members": self.store.members()}
 
     def capacity(self, host_id: str | None, requested: dict):
         with self.lock:
@@ -572,8 +573,11 @@ class HubRuntime:
             last = timestamp(server["last_seen"])
             if server["status"] != "online" or last is None or self.clock() - last > self.stale_seconds:
                 raise ConflictError("服务器当前数据不可用，刷新后再登记")
-            if not any(job["id"] == job_id and (host_id, job_id) not in self._missing for job in server["jobs"]):
+            job = next((job for job in server["jobs"] if job["id"] == job_id
+                        and (host_id, job_id) not in self._missing), None)
+            if job is None:
                 raise ConflictError("任务已消失或改变，请刷新后再登记")
+            return job
 
 
 class MonitorHTTPServer(ThreadingHTTPServer):
@@ -813,6 +817,35 @@ class Handler(BaseHTTPRequestHandler):
             token, _ = self._session()
             self.server.runtime.store.identity(token, name.strip())
             return self._reply(200, {"ok": True, "identity": {"name": name.strip()}})
+        if path == "/api/members" and self.command == "POST":
+            body = self._body()
+            name = self.server.runtime.store.add_member(body.get("name"))
+            return self._reply(200, {"ok": True, "name": name,
+                                     "members": self.server.runtime.store.members()})
+        task_match = re.fullmatch(r"/api/tasks/([^/]+)/([^/]+)/annotation", path)
+        if task_match and self.command == "PUT":
+            body = self._body()
+            owner_name = self.server.runtime.store._member_name(body.get("owner_name"))
+            notes = body.get("notes")
+            if not isinstance(notes, str) or len(notes.strip()) > 500 or "\x00" in notes:
+                raise ValueError("任务备注最多 500 个字符")
+            if "expected_updated_at" not in body:
+                raise ValueError("缺少任务版本，请刷新后重试")
+            expected = body["expected_updated_at"]
+            if expected is not None and (number(expected) is None or expected < 0):
+                raise ValueError("任务版本无效，请刷新后重试")
+            host_id, job_id = (unquote(part) for part in task_match.groups())
+            token, _ = self._session()
+            with self.server.runtime.lock:
+                job = self.server.runtime.require_job(host_id, job_id)
+                if job.get("state") in {"unknown", "ended"}:
+                    raise ConflictError("任务当前状态不可确认，请刷新后重试")
+                claim = self.server.runtime.store.upsert_annotation(
+                    token, host_id, job_id, (job.get("name") or "未命名任务")[:120],
+                    owner_name, notes.strip(), expected)
+            if not claim["can_edit"]:
+                claim.pop("log_path", None)
+            return self._reply(200, {"ok": True, "claim": claim})
         if path == "/api/claims" and self.command == "POST":
             body = self._body()
             payload = validate_claim(body)
@@ -833,8 +866,11 @@ class Handler(BaseHTTPRequestHandler):
             old = self.server.runtime.store.claim(match.group(1), token)
             if not old["can_edit"]:
                 raise OwnershipError("仅登记时使用的浏览器会话可以修改或释放登记")
+            expected = body.get("expected_updated_at", old["updated_at"])
+            if number(expected) is None or expected != old["updated_at"]:
+                raise ConflictError("其他成员已修改此任务，请刷新后重试")
             payload = validate_claim(body, old) if self.command == "PATCH" else None
-            self.server.runtime.store.update(token, match.group(1), payload)
+            self.server.runtime.store.update(token, match.group(1), payload, expected)
             if payload is None or any(payload.get(key) != old.get(key) for key in ("log_path", "log_kind", "total_units")):
                 with self.server.runtime.lock:
                     self.server.runtime.estimates.pop(match.group(1), None)

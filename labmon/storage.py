@@ -61,6 +61,9 @@ class Store:
                 CREATE TABLE IF NOT EXISTS server_names (
                     host_id TEXT PRIMARY KEY, name TEXT NOT NULL, updated_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS members (
+                    name TEXT PRIMARY KEY COLLATE NOCASE, created_at REAL NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS job_groups (
                     id TEXT PRIMARY KEY, host_id TEXT NOT NULL, name TEXT NOT NULL,
                     job_ids TEXT NOT NULL, created_at REAL NOT NULL
@@ -69,6 +72,17 @@ class Store:
                     id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL
                 );
             """)
+            # Existing installations have claim names but no member directory.
+            # Import them once; repeated startup is harmless and keeps the names
+            # available after a claim has ended or been released.
+            for row in db.execute("SELECT payload,created_at FROM claims ORDER BY created_at").fetchall():
+                try:
+                    name = json.loads(row["payload"]).get("owner_name")
+                except (ValueError, AttributeError):
+                    continue
+                if isinstance(name, str) and 1 <= len(name.strip()) <= 40 and "\x00" not in name:
+                    db.execute("INSERT OR IGNORE INTO members(name,created_at) VALUES(?,?)",
+                               (name.strip(), row["created_at"]))
             exists = db.execute("SELECT 1 FROM board_segments WHERE id=1").fetchone()
             if not exists:
                 old = db.execute("SELECT text,updated_at FROM shared_board WHERE id=1").fetchone()
@@ -108,6 +122,24 @@ class Store:
         with self._lock, self._connect() as db:
             db.execute("UPDATE sessions SET name=?,last_seen=? WHERE id=?",
                        (name, time.time(), self.session_key(token)))
+
+    @staticmethod
+    def _member_name(name):
+        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 40 or "\x00" in name:
+            raise ValueError("成员姓名需为 1–40 个字符")
+        return name.strip()
+
+    def members(self):
+        with self._connect() as db:
+            rows = db.execute("SELECT name FROM members ORDER BY created_at,name COLLATE NOCASE").fetchall()
+        return [row["name"] for row in rows]
+
+    def add_member(self, name):
+        name = self._member_name(name)
+        with self._lock, self._connect() as db:
+            db.execute("INSERT OR IGNORE INTO members(name,created_at) VALUES(?,?)", (name, time.time()))
+            row = db.execute("SELECT name FROM members WHERE name=? COLLATE NOCASE", (name,)).fetchone()
+        return row["name"]
 
     def server_names(self):
         with self._connect() as db:
@@ -230,13 +262,15 @@ class Store:
                 db.execute("BEGIN IMMEDIATE")
                 db.execute("INSERT INTO claims VALUES(?,?,?,?,?,?,?,NULL,NULL)",
                            (claim_id, host_id, job_id, session_id, encoded, now, now))
+                db.execute("INSERT OR IGNORE INTO members(name,created_at) VALUES(?,?)",
+                           (self._member_name(payload["owner_name"]), now))
                 db.execute("INSERT INTO changes(at,session_id,action,claim_id,payload) VALUES(?,?,?,?,?)",
                            (now, session_id, "create", claim_id, encoded))
         except sqlite3.IntegrityError as exc:
             raise ConflictError("这个任务已被其他会话登记，请刷新后查看") from exc
         return claim_id
 
-    def update(self, token: str, claim_id: str, payload: dict | None):
+    def update(self, token: str, claim_id: str, payload: dict | None, expected_updated_at=None):
         now, key = time.time(), self.session_key(token)
         with self._lock, self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -247,15 +281,55 @@ class Store:
                 raise OwnershipError("仅登记时使用的浏览器会话可以修改或释放登记")
             if row["released_at"] is not None or row["ended_at"] is not None:
                 raise ConflictError("登记已结束或已释放，请刷新")
+            if expected_updated_at is not None and row["updated_at"] != expected_updated_at:
+                raise ConflictError("其他成员已修改此任务，请刷新后重试")
+            now = max(now, row["updated_at"] + 0.000001)
             if payload is None:
                 db.execute("UPDATE claims SET released_at=?,updated_at=? WHERE id=?", (now, now, claim_id))
                 action, encoded = "release", row["payload"]
             else:
                 encoded = json.dumps(payload, ensure_ascii=False)
                 db.execute("UPDATE claims SET payload=?,updated_at=? WHERE id=?", (encoded, now, claim_id))
+                db.execute("INSERT OR IGNORE INTO members(name,created_at) VALUES(?,?)",
+                           (self._member_name(payload["owner_name"]), now))
                 action = "update"
             db.execute("INSERT INTO changes(at,session_id,action,claim_id,payload) VALUES(?,?,?,?,?)",
                        (now, key, action, claim_id, encoded))
+
+    def upsert_annotation(self, token: str, host_id: str, job_id: str, task_name: str,
+                          owner_name: str, notes: str, expected_updated_at):
+        """Update only the public name/note fields without transferring claim ownership."""
+        now, key = time.time(), self.session_key(token)
+        with self._lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM claims WHERE host_id=? AND job_id=? "
+                             "AND released_at IS NULL AND ended_at IS NULL", (host_id, job_id)).fetchone()
+            if row is None:
+                if expected_updated_at is not None:
+                    raise ConflictError("任务登记已变化，请刷新后重试")
+                claim_id = uuid.uuid4().hex
+                payload = {"owner_name": owner_name, "task_name": task_name,
+                           "expected_end": None, "notes": notes, "log_path": "",
+                           "log_kind": "abaqus", "total_units": None}
+                encoded = json.dumps(payload, ensure_ascii=False)
+                db.execute("INSERT INTO claims VALUES(?,?,?,?,?,?,?,NULL,NULL)",
+                           (claim_id, host_id, job_id, key, encoded, now, now))
+                action = "annotation_create"
+            else:
+                if expected_updated_at != row["updated_at"]:
+                    raise ConflictError("其他成员已修改此任务，请刷新后重试")
+                claim_id = row["id"]
+                payload = json.loads(row["payload"])
+                payload.update(owner_name=owner_name, notes=notes)
+                encoded = json.dumps(payload, ensure_ascii=False)
+                now = max(now, row["updated_at"] + 0.000001)
+                db.execute("UPDATE claims SET payload=?,updated_at=? WHERE id=?", (encoded, now, claim_id))
+                action = "annotation_update"
+            db.execute("INSERT OR IGNORE INTO members(name,created_at) VALUES(?,?)", (owner_name, now))
+            db.execute("INSERT INTO changes(at,session_id,action,claim_id,payload) VALUES(?,?,?,?,?)",
+                       (now, key, action, claim_id, encoded))
+            result = db.execute("SELECT * FROM claims WHERE id=?", (claim_id,)).fetchone()
+        return self._decode(result, key)
 
     def end_job(self, host_id: str, job_id: str):
         now = time.time()

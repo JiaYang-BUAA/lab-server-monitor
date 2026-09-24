@@ -99,3 +99,82 @@
 @media(max-width:1100px){.group-toolbar{align-items:stretch;flex-direction:column;gap:12px}.group-toolbar-actions{justify-content:flex-start}}
 @media(max-width:680px){.group-toolbar{padding:16px;gap:14px}.group-toolbar-intro{align-items:flex-start;gap:10px}.group-toolbar-icon{width:36px;height:36px}.group-toolbar-title{font-size:13px}.group-toolbar-hint{font-size:11px}.group-toolbar-actions{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;width:100%}.group-selection-count{justify-self:start}.group-toolbar-actions #clear-job-group{justify-self:end}.group-toolbar-actions #create-job-group{grid-column:1/-1;width:100%;min-height:44px}.job-group-select{min-height:40px;font-size:11px}}
 @media(max-width:680px){.task-table .job-row.group-selected{background:#f2f7ff;box-shadow:inset 3px 0 0 var(--blue)}.task-table .job-row.group-selected td{background:transparent}.task-table .job-row.group-selected td:first-child{box-shadow:none}}
+
+/* Each server owns one continuous resource, task, and SSH block. */
+.server-stack{display:grid;gap:24px}
+.server-stack>.empty-state,.server-stack>.initial-loading{border:1px solid var(--border);border-radius:var(--radius);background:var(--surface)}
+.global-task-toolbar{margin:0 0 18px;padding:0;border:0;gap:12px}
+.global-task-toolbar .filter-tabs{background:var(--surface);border:1px solid var(--border);border-radius:9px;padding:4px}
+.global-task-toolbar .search-box{max-width:330px;background:var(--surface)}
+.server-block{min-width:0;border:1px solid #dbe4ee;border-radius:16px;background:#f9fbfe;box-shadow:0 10px 32px #1d34580a;overflow:hidden}
+.server-block-header{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:20px 24px;border-bottom:1px solid var(--border);background:var(--surface)}
+.server-block-identity{display:flex;align-items:center;gap:13px;min-width:0}
+.server-block-identity>div{min-width:0}
+.server-block-identity .eyebrow{margin:0 0 1px;color:#6b819c}
+.server-block-identity h3{font-size:19px;line-height:1.35;overflow-wrap:anywhere}
+.server-block-meta{font-size:11px;color:var(--muted);margin-top:3px;overflow-wrap:anywhere}
+.server-block-controls{display:flex;align-items:center;gap:10px;flex:none}
+.server-block-body{padding:0 24px 24px}
+.server-subsection{min-width:0;padding-top:23px}
+.server-subsection+.server-subsection{margin-top:23px;border-top:1px solid var(--border)}
+.server-subheading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:13px}
+.server-subheading h4{font-size:15px;line-height:1.4;margin:0;font-weight:650}
+.server-subheading p{font-size:11px;color:var(--muted);margin-top:3px}
+.server-subheading .subtle{max-width:none;white-space:nowrap}
+.server-block .detail-grid{grid-template-columns:minmax(0,1.4fr) minmax(235px,1fr)}
+.server-block .metric-card{padding:15px 16px}
+.server-block .metric-value{font-size:26px;margin-top:10px}
+.server-block .task-table .task-col{width:19%}
+.server-block .task-table .owner-col{width:14%}
+.server-block .task-table .notes-col{width:18%}
+.server-block .task-table .load-col{width:11%}
+.server-block .task-table .eta-col{width:23%}
+.server-block .task-table .action-col{width:15%}
+.server-block .task-table th,.server-block .task-table td{padding-left:11px;padding-right:11px}
+.server-block .task-table th:first-child,.server-block .task-table td:first-child{padding-left:17px}
+.task-owner-select,.task-note-editor textarea{width:100%;min-width:0;border:1px solid #cad7e7;border-radius:7px;background:#fff;color:var(--ink);font-size:12px}
+.task-owner-select{min-height:38px;padding:7px 8px;cursor:pointer}
+.task-note-editor{display:flex;flex-direction:column;align-items:flex-end;gap:6px}
+.task-note-editor textarea{min-height:64px;resize:vertical;padding:8px 9px;line-height:1.5}
+.task-note-editor .button{min-height:30px;padding:4px 9px;font-size:11px}
+.task-note-editor .button:disabled{opacity:.55}
+.server-block .group-toolbar-actions [data-clear-job-group]{border-color:transparent;background:transparent;color:#576b84}
+.server-block .group-toolbar-actions [data-create-job-group]{min-width:132px}
+.server-block .group-toolbar-actions [data-create-job-group]:disabled{opacity:1;border-color:#dce5f0;background:#e8edf4;color:#718198}
+.refresh-group>.button{min-width:120px}
+@media(max-width:1250px){
+  .server-block .detail-grid{grid-template-columns:1fr}
+  .server-block .task-table,.server-block .task-table tbody,.server-block .task-table tr,.server-block .task-table td{display:block;width:100%}
+  .server-block .task-table thead{display:none}
+  .server-block .task-table .job-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;padding:17px;border-bottom:1px solid var(--border)}
+  .server-block .task-table td{padding:0!important;border:0}
+  .server-block .task-table td:first-child{grid-column:1/-1}
+  .server-block .task-table td[data-label]::before{content:attr(data-label);display:block;font-size:10px;color:var(--muted);margin-bottom:4px}
+  .server-block .task-table td.eta-cell{grid-column:span 2}
+  .server-block .task-table td.action-cell{grid-column:1/-1}
+  .server-block .task-actions{flex-direction:row;align-items:center;flex-wrap:wrap;gap:10px}
+  .server-block .task-table .job-row.group-selected{background:#f2f7ff;box-shadow:inset 3px 0 0 var(--blue)}
+  .server-block .task-table .job-row.group-selected td{background:transparent;box-shadow:none}
+  .server-block .detail-row td{padding:16px!important}
+}
+@media(max-width:900px){.server-block .storage-content{display:block}.server-block .disk-row+.disk-row{margin-top:12px}.server-block .network-row{margin-top:12px}}
+@media(max-width:680px){
+  .global-task-toolbar{display:block;margin-bottom:14px;padding:0}
+  .global-task-toolbar .filter-tabs{margin-bottom:10px}
+  .global-task-toolbar .search-box{max-width:none}
+  .server-stack{gap:16px}
+  .server-block-header{padding:16px;align-items:flex-start}
+  .server-block-identity{align-items:flex-start;gap:9px}
+  .server-block-identity h3{font-size:17px}
+  .server-block-controls{flex-direction:column;align-items:flex-end;gap:4px}
+  .server-block-body{padding:0 15px 17px}
+  .server-subsection{padding-top:17px}
+  .server-subsection+.server-subsection{margin-top:16px}
+  .server-subheading .subtle{white-space:normal;text-align:right;max-width:110px}
+  .server-block .task-table .job-row{grid-template-columns:repeat(2,minmax(0,1fr));gap:13px}
+  .server-block .task-table td[data-label="任务备注"],.server-block .task-table td.eta-cell{grid-column:1/-1}
+  .server-block .task-note-editor textarea{min-height:52px;font-size:16px}
+  .server-block .task-owner-select{font-size:16px;min-height:44px}
+  .server-block .group-toolbar-actions{display:grid}
+  .server-block .group-toolbar-actions [data-create-job-group]{grid-column:1/-1;width:100%}
+}

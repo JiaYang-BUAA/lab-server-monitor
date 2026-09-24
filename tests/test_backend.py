@@ -80,6 +80,30 @@ class StorageTests(unittest.TestCase):
         reloaded.create(self.b, "lab-new", "job", claim_payload())
         self.assertEqual(len(reloaded.claims()), 1)
 
+    def test_member_directory_backfills_legacy_claims_and_keeps_names(self):
+        self.store.create(self.a, "lab-new", "first", claim_payload(owner_name="旧成员"))
+        self.store.create(self.b, "lab-new", "second", claim_payload(owner_name="另一成员"))
+        with self.store._connect() as db:
+            db.execute("DELETE FROM members")
+        restored = Store(self.path)
+        self.assertEqual(restored.members(), ["旧成员", "另一成员"])
+        self.assertEqual(restored.add_member("  新成员  "), "新成员")
+        self.assertEqual(restored.add_member("新成员"), "新成员")
+        self.assertEqual(restored.members(), ["旧成员", "另一成员", "新成员"])
+        for invalid in ("", " ", "a" * 41, "含\x00空字节", 7):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                restored.add_member(invalid)
+
+    def test_annotation_version_prevents_stale_full_edit(self):
+        claim_id = self.store.create(self.a, "lab-new", "job", claim_payload())
+        old = self.store.claim(claim_id)
+        changed = self.store.upsert_annotation(self.b, "lab-new", "job", "ignored", "小李", "新备注",
+                                                old["updated_at"])
+        self.assertFalse(changed["can_edit"])
+        with self.assertRaises(ConflictError):
+            self.store.update(self.a, claim_id, claim_payload(notes="旧内容"), old["updated_at"])
+        self.assertEqual(self.store.claim(claim_id)["notes"], "新备注")
+
 
 class GroupTests(unittest.TestCase):
     def test_groups_matching_software_tree_and_sums(self):
@@ -378,6 +402,70 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(self.request("POST", "/api/claims", body)[0], 409)
         self.assertEqual(self.request("PATCH", "/api/claims/" + mine["id"], {"notes": "更新"}, cookie)[0], 200)
         self.assertEqual(self.request("DELETE", "/api/claims/" + mine["id"], {}, cookie)[0], 200)
+
+    def test_member_endpoint_and_shared_task_annotation(self):
+        code, headers, raw = self.request("GET", "/api/state")
+        self.assertEqual(code, 200)
+        first_cookie = headers["Set-Cookie"].split(";", 1)[0]
+        job = json.loads(raw)["servers"][0]["jobs"][0]
+        path = f"/api/tasks/lab-new/{job['id']}/annotation"
+        self.assertEqual(self.request("POST", "/api/members", {"name": "甲"}, origin=False)[0], 403)
+        self.assertEqual(self.request("POST", "/api/members", {"name": " "})[0], 400)
+        self.assertEqual(self.request("POST", "/api/members", {"name": "  甲  "})[0], 200)
+        self.assertEqual(json.loads(self.request("POST", "/api/members", {"name": "甲"})[2])["members"], ["甲"])
+        self.assertEqual(self.request("PUT", path, {"owner_name": "甲", "notes": "备注"}, first_cookie)[0], 400)
+        self.assertEqual(self.request("PUT", path, {"owner_name": "甲", "notes": "备注", "expected_updated_at": None},
+                                      first_cookie, origin=False)[0], 403)
+        code, _, raw = self.request("PUT", path, {"owner_name": "甲", "notes": "备注", "expected_updated_at": None}, first_cookie)
+        self.assertEqual(code, 200)
+        created = json.loads(raw)["claim"]
+        self.assertTrue(created["can_edit"])
+        self.assertEqual(created["task_name"], job["name"])
+        self.assertEqual(created["notes"], "备注")
+        self.assertEqual(created["expected_end"], None)
+        self.assertEqual(json.loads(self.request("GET", "/api/state")[2])["members"], ["甲"])
+
+        # A second visitor can edit the public fields without taking over the
+        # original session's task name, ETA, log binding, or release rights.
+        updated_full = claim_payload(owner_name="甲", task_name="自定义任务", notes="备注",
+                                     expected_end="2026-09-23T18:00:00+08:00", log_path="E:/private/job.sta")
+        self.assertEqual(self.request("PATCH", "/api/claims/" + created["id"], updated_full, first_cookie)[0], 200)
+        current = self.runtime.store.claim(created["id"])
+        code, _, raw = self.request("PUT", path, {"owner_name": "乙", "notes": "他人补充",
+                                                  "expected_updated_at": current["updated_at"]})
+        self.assertEqual(code, 200)
+        changed = json.loads(raw)["claim"]
+        self.assertFalse(changed["can_edit"])
+        self.assertNotIn("log_path", changed)
+        self.assertEqual((changed["task_name"], changed["expected_end"]),
+                         ("自定义任务", "2026-09-23T10:00:00Z"))
+        self.assertEqual(self.runtime.store.claim(created["id"])["log_path"], "E:/private/job.sta")
+        self.assertEqual(json.loads(self.request("GET", "/api/state")[2])["members"], ["甲", "乙"])
+        self.assertEqual(self.request("PATCH", "/api/claims/" + created["id"], {"notes": "越权"})[0], 403)
+        self.assertEqual(self.request("DELETE", "/api/claims/" + created["id"], {})[0], 403)
+        self.assertEqual(self.request("PUT", path, {"owner_name": "丙", "notes": "旧版本",
+                                                   "expected_updated_at": current["updated_at"]})[0], 409)
+        self.assertEqual(self.request("PATCH", "/api/claims/" + created["id"],
+                                      {"notes": "旧窗口覆盖", "expected_updated_at": current["updated_at"]},
+                                      first_cookie)[0], 409)
+        self.assertEqual(self.request("DELETE", "/api/claims/" + created["id"],
+                                      {"expected_updated_at": current["updated_at"]}, first_cookie)[0], 409)
+        self.assertEqual(self.runtime.store.claim(created["id"])["owner_name"], "乙")
+        self.assertEqual(self.request("DELETE", "/api/claims/" + created["id"], {}, first_cookie)[0], 200)
+
+    def test_annotation_rejects_missing_or_unavailable_jobs_and_bad_inputs(self):
+        job_id = self.runtime.servers["lab-new"]["jobs"][0]["id"]
+        path = f"/api/tasks/lab-new/{job_id}/annotation"
+        for body in ({"owner_name": "", "notes": "", "expected_updated_at": None},
+                     {"owner_name": "甲", "notes": "x" * 501, "expected_updated_at": None},
+                     {"owner_name": "甲", "notes": "", "expected_updated_at": True}):
+            with self.subTest(body=body):
+                self.assertEqual(self.request("PUT", path, body)[0], 400)
+        self.assertEqual(self.request("PUT", "/api/tasks/lab-new/absent/annotation",
+                                      {"owner_name": "甲", "notes": "", "expected_updated_at": None})[0], 409)
+        self.now += 31
+        self.assertEqual(self.request("PUT", path, {"owner_name": "甲", "notes": "",
+                                                    "expected_updated_at": None})[0], 409)
 
     def test_cross_origin_missing_origin_and_wrong_host_rejected(self):
         self.assertEqual(self.request("POST", "/api/identity", {"name": "A"}, origin=False)[0], 403)
