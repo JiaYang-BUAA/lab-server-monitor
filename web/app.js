@@ -280,7 +280,7 @@
       return `<article class="server-block" data-host="${esc(item.id)}" id="server-${esc(item.id)}">
         <header class="server-block-header"><div class="server-block-identity"><span class="server-icon">${svg('server')}</span><div><p class="eyebrow">SERVER / ${esc(item.id)}</p><h3>${esc(item.name)}</h3><p class="server-block-meta">${esc(platformLabel(item))}${numeric(sample?.cpu?.logical_processors) ? ` · ${count(sample.cpu.logical_processors)} 逻辑处理器` : ''} · ${jobs.length} 项计算任务</p></div></div><div class="server-block-controls">${statusBadge(status)}<button type="button" class="server-name-button" data-rename-server="${esc(item.id)}" data-focus-key="rename-${esc(item.id)}" aria-label="修改 ${esc(item.name)} 的名称">修改名称</button></div></header>
         <div class="server-block-body"><section class="server-subsection" aria-label="${esc(item.name)} 的资源监测"><div class="server-subheading"><div><h4>资源监测</h4><p>${esc(status === 'unconfigured' ? '待接入后显示真实数据' : sample?.cpu?.model || '监测数据来自服务器采样')}</p></div><span class="subtle">${sample ? `${status === 'online' ? '采样' : '上次采样'} ${esc(fullTime(sample.observed_at || item.last_seen))}` : '尚无采样'}</span></div>${hardwareHTML(item)}</section>
-        <section class="server-subsection" aria-label="${esc(item.name)} 的计算任务"><div class="server-subheading"><div><h4>计算任务 <span class="count-badge">${sample && status !== 'unconfigured' ? jobs.length : '—'}</span></h4><p>选择姓名并填写备注，所有成员都能看到。</p></div><span class="section-note">登记不会启动或停止计算</span></div><div class="panel tasks-panel">${groupToolbarHTML(item)}<div class="task-content">${jobsHTML(item)}</div><div class="table-footnote">CPU 占用按整台服务器的全部逻辑处理器计算。任务消失仅代表进程已结束，不代表计算成功。</div></div></section>
+        <section class="server-subsection" aria-label="${esc(item.name)} 的计算任务"><div class="server-subheading"><div><h4>计算任务 <span class="count-badge">${sample && status !== 'unconfigured' ? jobs.length : '—'}</span></h4><p>选择姓名并填写备注，所有成员都能看到。</p></div><span class="section-note">登记不会启动或停止计算</span></div><div class="panel tasks-panel">${taskToolbarHTML()}${groupToolbarHTML(item)}<div class="task-content">${jobsHTML(item)}</div><div class="table-footnote">CPU 占用按整台服务器的全部逻辑处理器计算。任务消失仅代表进程已结束，不代表计算成功。</div></div></section>
         <section class="server-subsection" aria-label="${esc(item.name)} 的 SSH 连接"><div class="server-subheading"><div><h4>SSH 连接</h4><p>连接数不等同于使用人数。</p></div></div><div class="panel">${sshHTML(item)}</div></section></div></article>`;
     }).join('') : '';
     $('server-list').querySelectorAll('details[data-preserve]').forEach((node) => { node.open = openDetails.has(`${node.closest('[data-host]')?.dataset.host}:${node.dataset.preserve}`); });
@@ -369,6 +369,10 @@
   }
   const isGroupedJob = (job) => Array.isArray(job.grouped_job_ids) && job.grouped_job_ids.length > 0;
   const canGroupJob = (item, job) => canClaim(item) && !['ended','unknown'].includes(job.state) && !job.claim && !isGroupedJob(job);
+  function taskToolbarHTML() {
+    const choices = [['all', '全部任务'], ['unclaimed', '未认领'], ['mine', '我的登记']];
+    return `<div class="task-toolbar"><div class="filter-tabs" role="group" aria-label="筛选当前服务器的计算任务">${choices.map(([value, label]) => `<button type="button" class="filter-button ${filter === value ? 'selected' : ''}" data-filter="${value}" data-focus-key="filter-${value}" aria-pressed="${filter === value}">${label}</button>`).join('')}</div><label class="search-box"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><span class="sr-only">搜索当前服务器的任务、软件或姓名</span><input data-task-search data-focus-key="task-search" type="search" value="${esc(query)}" placeholder="搜索当前服务器的任务或姓名" autocomplete="off"></label></div>`;
+  }
   function groupToolbarHTML(item) {
     const jobs = Array.isArray(item.jobs) ? item.jobs : [];
     const eligible = new Set((jobs || []).filter((job) => canGroupJob(item, job)).map((job) => job.id));
@@ -604,6 +608,8 @@
     if (!hostId) return;
     const rename=event.target.closest('[data-rename-server]');
     if (rename) { openServerName(hostId); return; }
+    const taskFilter=event.target.closest('[data-filter]');
+    if (taskFilter) { filter=taskFilter.dataset.filter; renderJobs(); return; }
     if (event.target.closest('[data-create-job-group]')) { selectedId=hostId; openJobGroup(); return; }
     if (event.target.closest('[data-clear-job-group]')) { selectedId=hostId; groupSelection.clear(); renderJobs(); return; }
     const ungroup=event.target.closest('[data-ungroup]');
@@ -641,6 +647,8 @@
     }
   });
   $('server-list').addEventListener('input',(event)=>{
+    const taskSearch=event.target.closest('[data-task-search]');
+    if (taskSearch) { query=taskSearch.value; renderJobs(); return; }
     const note=event.target.closest('[data-task-note]');
     if (!note) return;
     const hostId=note.closest('[data-host]')?.dataset.host;
@@ -660,8 +668,6 @@
   $('board-form').addEventListener('submit',saveBoard);
   $('job-group-form').addEventListener('submit',saveJobGroup);
   $('job-group-dialog').addEventListener('cancel',(event)=>{if(groupSubmitting)event.preventDefault();});
-  document.querySelectorAll('[data-filter]').forEach((button)=>button.addEventListener('click',()=>{filter=button.dataset.filter;document.querySelectorAll('[data-filter]').forEach((b)=>{b.classList.toggle('selected',b===button);b.setAttribute('aria-pressed',String(b===button));});renderJobs();}));
-  $('task-search').addEventListener('input',(event)=>{query=event.target.value;renderJobs();});
   $('refresh-button').addEventListener('click',()=>{clearTimeout(timer);refresh(true);});
   $('server-name-form').addEventListener('submit',saveServerName);
   $('server-name-dialog').addEventListener('cancel',(event)=>{if(renameSaving)event.preventDefault();});
