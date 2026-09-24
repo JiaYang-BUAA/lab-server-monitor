@@ -102,7 +102,8 @@
       if (state) render();
       else {
         $('board-text').textContent = '暂时无法读取共享公告，连接恢复后自动重试。';
-        $('server-list').innerHTML = empty('暂时无法读取服务器', '连接恢复后每 5 秒自动重试。', 'server');
+        $('server-cards').innerHTML = empty('暂时无法读取服务器', '连接恢复后每 5 秒自动重试。', 'server');
+        $('server-list').innerHTML = '';
       }
     } finally {
       fetching = false;
@@ -256,19 +257,24 @@
     const needle = serverQuery.trim().toLocaleLowerCase();
     const visible = state.servers.filter((item) => `${item.name} ${item.id}`.toLocaleLowerCase().includes(needle));
     $('server-count').textContent = String(total);
-    $('server-summary').textContent = total ? `${state.servers.filter((item) => effectiveStatus(item) === 'online').length} 台在线 · 各服务器的资源、任务和连接依次列出` : '尚未配置服务器';
+    $('server-summary').textContent = total ? `${state.servers.filter((item) => effectiveStatus(item) === 'online').length} 台在线 · 点击服务器查看资源、任务和连接` : '尚未配置服务器';
     $('server-search-clear').hidden = !serverQuery;
     $('server-search-status').hidden = !needle;
     const searchStatus = needle ? `找到 ${visible.length} / ${total} 台服务器` : '';
     if ($('server-search-status').textContent !== searchStatus) $('server-search-status').textContent = searchStatus;
     if (!total) {
-      $('server-list').innerHTML = empty('还没有配置服务器','添加服务器连接后，资源、计算任务和 SSH 状态会显示在这里。','server'); return;
+      $('server-cards').innerHTML = empty('还没有配置服务器','添加服务器连接后，资源、计算任务和 SSH 状态会显示在这里。','server');
+      $('server-list').innerHTML = '';
+      return;
     }
-    if (!visible.length) {
-      $('server-list').innerHTML = empty('没有匹配的服务器','请调整名称或 ID 关键词，或清除搜索。','server'); return;
-    }
+    $('server-cards').innerHTML = visible.length ? visible.map((item) => {
+      const s = item.snapshot, status = effectiveStatus(item), pending = status === 'unconfigured';
+      const jobs = (item.jobs || []).filter((job) => job.state !== 'ended');
+      return `<article class="server-card ${item.id === selectedId ? 'selected' : ''} ${pending ? 'pending' : ''}"><button type="button" class="server-card-select" data-server="${esc(item.id)}" data-focus-key="server-${esc(item.id)}" aria-pressed="${item.id === selectedId}" aria-label="查看 ${esc(item.name)} 的状态"><div class="server-card-heading"><span class="server-icon">${svg('server')}</span><div class="server-card-title"><h3>${esc(item.name)}</h3><div class="server-id">${esc(item.id)}</div></div>${statusBadge(status)}</div><div class="server-platform-row"><span class="platform-badge">${platformLabel(item)}</span>${numeric(s?.cpu?.logical_processors) ? `<span>${count(s.cpu.logical_processors)} 逻辑处理器</span>` : ''}</div>${pending ? '<div class="pending-copy"><strong>尚未配置监测连接</strong>接入后将显示硬件、计算任务和 SSH 状态。</div>' : `<div class="server-card-body"><div><div class="mini-label"><span>CPU${status !== 'online' ? ' · 上次采样' : ''}</span><b>${percent(s?.cpu?.percent)}</b></div>${meter(s?.cpu?.percent)}</div><div><div class="mini-label"><span>内存</span><b>${percent(s?.memory?.percent)}</b></div>${meter(s?.memory?.percent,'teal')}</div></div>`}<div class="server-card-footer"><span>${pending ? '等待配置' : s ? `${jobs.length} 个计算任务 · ${count(s.ssh?.tcp_connections)} 个 SSH 连接` : '尚未获得有效采样'}</span><span>${pending ? '—' : item.id === selectedId ? '当前查看' : '查看详情 →'}</span></div></button><div class="server-card-controls"><button type="button" class="server-name-button" data-rename-server="${esc(item.id)}" data-focus-key="rename-${esc(item.id)}" aria-label="修改 ${esc(item.name)} 的名称">修改名称</button></div></article>`;
+    }).join('') : empty('没有匹配的服务器','请调整名称或 ID 关键词，或清除搜索。','server');
     const openDetails = new Set([...$('server-list').querySelectorAll('details[open][data-preserve]')].map((node) => `${node.closest('[data-host]')?.dataset.host}:${node.dataset.preserve}`));
-    $('server-list').innerHTML = visible.map((item) => {
+    const selected = server();
+    $('server-list').innerHTML = selected ? [selected].map((item) => {
       const status = effectiveStatus(item), sample = item.snapshot;
       const jobs = Array.isArray(item.jobs) ? item.jobs.filter((job) => job.state !== 'ended') : [];
       return `<article class="server-block" data-host="${esc(item.id)}" id="server-${esc(item.id)}">
@@ -276,7 +282,7 @@
         <div class="server-block-body"><section class="server-subsection" aria-label="${esc(item.name)} 的资源监测"><div class="server-subheading"><div><h4>资源监测</h4><p>${esc(status === 'unconfigured' ? '待接入后显示真实数据' : sample?.cpu?.model || '监测数据来自服务器采样')}</p></div><span class="subtle">${sample ? `${status === 'online' ? '采样' : '上次采样'} ${esc(fullTime(sample.observed_at || item.last_seen))}` : '尚无采样'}</span></div>${hardwareHTML(item)}</section>
         <section class="server-subsection" aria-label="${esc(item.name)} 的计算任务"><div class="server-subheading"><div><h4>计算任务 <span class="count-badge">${sample && status !== 'unconfigured' ? jobs.length : '—'}</span></h4><p>选择姓名并填写备注，所有成员都能看到。</p></div><span class="section-note">登记不会启动或停止计算</span></div><div class="panel tasks-panel">${groupToolbarHTML(item)}<div class="task-content">${jobsHTML(item)}</div><div class="table-footnote">CPU 占用按整台服务器的全部逻辑处理器计算。任务消失仅代表进程已结束，不代表计算成功。</div></div></section>
         <section class="server-subsection" aria-label="${esc(item.name)} 的 SSH 连接"><div class="server-subheading"><div><h4>SSH 连接</h4><p>连接数不等同于使用人数。</p></div></div><div class="panel">${sshHTML(item)}</div></section></div></article>`;
-    }).join('');
+    }).join('') : '';
     $('server-list').querySelectorAll('details[data-preserve]').forEach((node) => { node.open = openDetails.has(`${node.closest('[data-host]')?.dataset.host}:${node.dataset.preserve}`); });
   }
   function openServerName(id) {
@@ -584,6 +590,15 @@
     catch(error){formError('claim-error',error);}
     finally{setSubmitting(false);$('release-button').textContent='释放登记';}
   }
+  $('server-cards').addEventListener('click',(event)=>{
+    const rename=event.target.closest('[data-rename-server]');
+    if (rename) { openServerName(rename.dataset.renameServer); return; }
+    const choice=event.target.closest('[data-server]');
+    if (!choice || selectedId===choice.dataset.server) return;
+    selectedId=choice.dataset.server;
+    expanded.clear(); groupSelection.clear();
+    preserveFocus(renderServers);
+  });
   $('server-list').addEventListener('click',(event)=>{
     const hostId=event.target.closest('[data-host]')?.dataset.host;
     if (!hostId) return;
