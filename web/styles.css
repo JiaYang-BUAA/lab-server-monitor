@@ -70,3 +70,32 @@
 @media(min-width:1600px){.server-card-select{padding:24px 26px 14px}}
 @media(max-width:900px){.server-card-select{padding:18px 18px 10px}}
 @media(max-width:680px){.server-card-select{padding:16px 18px 8px}.server-card-controls{padding:0 8px 6px}.server-name-button{min-height:40px}}
+
+/* Keep the optional task-grouping flow visually separate from filters and data. */
+.group-toolbar{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:17px 20px;border-bottom:1px solid var(--border);background:linear-gradient(105deg,#f2f7ff 0%,#f8fbff 55%,#fff 100%)}
+.group-toolbar-intro{display:flex;align-items:center;gap:12px;min-width:0}
+.group-toolbar-icon{width:40px;height:40px;display:grid;place-items:center;flex:none;border:1px solid #d9e5f7;border-radius:10px;background:#fff;color:var(--blue)}
+.group-toolbar-icon svg{width:19px;height:19px}
+.group-toolbar-copy{min-width:0}
+.group-toolbar-title{font-size:12px;line-height:1.5;font-weight:650;color:var(--ink)}
+.group-toolbar-hint{margin-top:2px;font-size:11px;line-height:1.6;color:var(--muted)}
+.group-toolbar-actions{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:8px;flex:none}
+.group-selection-count{display:inline-flex;align-items:center;gap:7px;min-height:40px;padding:8px 11px;border:1px solid #dce5f0;border-radius:7px;background:#fff;color:#51657f;font-size:11px;font-weight:600;white-space:nowrap;font-variant-numeric:tabular-nums}
+.group-selection-count::before{content:"";width:7px;height:7px;border-radius:50%;background:#a7b7ca}
+.group-toolbar.has-selection .group-selection-count{border-color:#c8daf4;background:#eaf2ff;color:var(--blue)}
+.group-toolbar.has-selection .group-selection-count::before{background:var(--blue)}
+.group-toolbar-actions #clear-job-group{border-color:transparent;background:transparent;color:#576b84}
+.group-toolbar-actions #clear-job-group:hover{border-color:#d8e2ef;background:#fff;color:var(--blue)}
+.group-toolbar-actions #create-job-group{min-width:132px}
+.group-toolbar-actions #create-job-group:disabled{opacity:1;border-color:#dce5f0;background:#e8edf4;color:#718198}
+.job-group-select{display:inline-flex;align-items:center;gap:7px;min-height:36px;margin:-4px 0 7px -7px;padding:6px 9px;border:1px solid #e1e8f1;border-radius:7px;background:#f7f9fc;color:#526780;font-size:10px;font-weight:600;line-height:1.4;cursor:pointer;white-space:nowrap}
+.job-group-select input{width:16px;height:16px;flex:none;margin:0;accent-color:var(--blue);cursor:pointer}
+.job-group-select:hover{border-color:#bed0ea;background:#edf4ff;color:var(--blue)}
+.job-group-select:focus-within{outline:2px solid #4c8bc9;outline-offset:2px}
+.task-table .job-row.group-selected td{background:#f2f7ff}
+.task-table .job-row.group-selected td:first-child{box-shadow:inset 3px 0 0 var(--blue)}
+.job-row.group-selected .job-group-select{border-color:#abc7ed;background:#e2eeff;color:var(--blue)}
+.job-grouped-tag{display:inline-flex;align-items:center;margin:2px 7px 2px 0;padding:3px 7px;border:1px solid #cde7e4;border-radius:5px;background:var(--teal-soft);color:#126970;font-size:10px;font-weight:600}
+@media(max-width:1100px){.group-toolbar{align-items:stretch;flex-direction:column;gap:12px}.group-toolbar-actions{justify-content:flex-start}}
+@media(max-width:680px){.group-toolbar{padding:16px;gap:14px}.group-toolbar-intro{align-items:flex-start;gap:10px}.group-toolbar-icon{width:36px;height:36px}.group-toolbar-title{font-size:13px}.group-toolbar-hint{font-size:11px}.group-toolbar-actions{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;width:100%}.group-selection-count{justify-self:start}.group-toolbar-actions #clear-job-group{justify-self:end}.group-toolbar-actions #create-job-group{grid-column:1/-1;width:100%;min-height:44px}.job-group-select{min-height:40px;font-size:11px}}
+@media(max-width:680px){.task-table .job-row.group-selected{background:#f2f7ff;box-shadow:inset 3px 0 0 var(--blue)}.task-table .job-row.group-selected td{background:transparent}.task-table .job-row.group-selected td:first-child{box-shadow:none}}

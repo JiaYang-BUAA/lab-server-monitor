@@ -361,6 +361,7 @@
     const eligible = new Set((jobs || []).filter((job) => canGroupJob(item, job)).map((job) => job.id));
     for (const id of groupSelection) if (!eligible.has(id)) groupSelection.delete(id);
     $('group-toolbar').hidden = !item?.snapshot || item.status === 'unconfigured';
+    $('group-toolbar').classList.toggle('has-selection', groupSelection.size > 0);
     $('group-selection-count').textContent = `已选 ${groupSelection.size} 项${effectiveStatus(item || {status:'offline'}) !== 'online' ? ' · 服务器未在线' : ''}`;
     $('create-job-group').disabled = groupSubmitting || groupSelection.size < 2 || groupSelection.size > 32;
     $('clear-job-group').hidden = groupSelection.size === 0;
